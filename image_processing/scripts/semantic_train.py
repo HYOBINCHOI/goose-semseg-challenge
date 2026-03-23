@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 DEFAULT_GOOSE_TOOLS_ROOT = str(
-    (Path(__file__).resolve().parent.parent / "image_processing").resolve() #1
+    (Path(__file__).resolve().parent.parent / "image_processing").resolve() 
 )
 
 
@@ -594,7 +594,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output_dir", type=str, default=default_output_dir())
     parser.add_argument(
-        "--run_name", type=str, default="convnext_mask2former11" # test change
+        "--run_name", type=str, default="convnext_mask2former11"
     )
 
     parser.add_argument("--epochs", type=int, default=100)

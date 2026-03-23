@@ -81,9 +81,9 @@ The results will be printed to the console and saved as a file to the output dir
 
 To run the images through the models and save the inferred results use the `inference.py` script.
 
-**Example usage of `inference.py`**
+**Example usage of `compare_gt.py`**
 ```bash
-python inference.py /path/to/goose /path/to/ckpt -rw 1024 -rh 768 --resize --overlay true
+python compare_gt.py /path/to/goose /path/to/ckpt -rw 1024 -rh 768 --resize --overlay true
 ```
 
 The results will be saved to the output directory (default = output/inference/)

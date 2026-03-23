@@ -594,7 +594,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output_dir", type=str, default=default_output_dir())
     parser.add_argument(
-        "--run_name", type=str, default="convnext_mask2former11"
+        "--run_name", type=str, default="convnext_mask2former11" # test change
     )
 
     parser.add_argument("--epochs", type=int, default=100)

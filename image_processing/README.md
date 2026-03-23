@@ -79,7 +79,7 @@ The results will be printed to the console and saved as a file to the output dir
 
 ### Model inference
 
-To run the images through the models and save the inferred results use the `inference.py` script.
+To run the images through the models and save the inferred results use the `compare_gt.py` script.
 
 **Example usage of `compare_gt.py`**
 ```bash

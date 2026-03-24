@@ -1,9 +1,6 @@
 """
 GT vs Prediction visualization for ConvNeXt + Mask2Former checkpoints.
 
-This script keeps the original DINO comparison script untouched and provides
-the same workflow for ConvNeXt-based checkpoints, especially the boosted
-variant used in this project.
 """
 
 import argparse
@@ -24,7 +21,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 
 if not hasattr(torch.amp, "GradScaler"):
-    torch.amp.GradScaler = torch.cuda.amp.GradScaler  # type: ignore[attr-defined]
+    torch.amp.GradScaler = torch.cuda.amp.GradScaler  
 
 
 def load_module(module_name: str, module_path: Path):
@@ -213,8 +210,8 @@ def compute_per_class_iou(
 def parse_args() -> argparse.Namespace:
     default_ckpt = str(
         PROJECT_ROOT
-        / "output/convnext_mask2former_512_64_boosted/20260321_184712"
-        / "goose_convnext_mask2former_512_64_boosted/best_miou.pt"
+        / "output/convnext_mask2former/20260321_184712"
+        / "goose_convnext_mask2former/best_miou.pt"
     )
     default_colormap = str(PROJECT_ROOT / "common/goose_colormap.json")
     default_output = str(PROJECT_ROOT / "output/comparison_results_convnext")

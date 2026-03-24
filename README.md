@@ -14,7 +14,6 @@ GOOSE challenge repository for semantic segmentation.
 - torch = 1.13.1
   - <https://pytorch.org/get-started/locally/>
 - The python packages specified in `config/requirements.txt`
-- SuperGradients is only needed for the examples.
 
 </details>
 

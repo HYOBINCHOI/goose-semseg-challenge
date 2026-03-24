@@ -2,13 +2,6 @@
 """
 Create a Codabench submission zip from full-test semantic predictions.
 
-This script:
-1. Reads the official development/final subset lists from txt files.
-2. Matches each requested `*_labelids.png` target to an existing prediction.
-3. Handles GOOSE sensor suffix variants such as `_camera_left`, `_windshield_vis`,
-   `_front`, and `_realsense`.
-4. Falls back to `scene prefix + timestamp` matching when frame indices differ.
-5. Writes a submission folder and a root-level zip containing prediction PNGs only.
 """
 
 import argparse

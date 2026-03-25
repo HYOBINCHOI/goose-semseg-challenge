@@ -192,19 +192,22 @@ def parse_args() -> argparse.Namespace:
 def semantic_map_to_targets(
     semantic_map: torch.Tensor, ignore_index: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    classes = torch.unique(semantic_map)
-    classes = classes[classes != ignore_index]
+    class_ids = torch.unique(semantic_map)
+    valid_class_ids = class_ids[class_ids != ignore_index]
 
-    if classes.numel() == 0:
-        empty_classes = torch.zeros((0,), dtype=torch.long)
-        empty_masks = torch.zeros(
+    if valid_class_ids.numel() == 0:
+        empty_class_ids = torch.zeros((0,), dtype=torch.long)
+        empty_class_masks = torch.zeros(
             (0, semantic_map.shape[0], semantic_map.shape[1]),
             dtype=torch.float32,
         )
-        return empty_classes, empty_masks
+        return empty_class_ids, empty_class_masks
 
-    masks = [(semantic_map == class_idx).to(torch.float32) for class_idx in classes]
-    return classes.to(torch.long), torch.stack(masks, dim=0)
+    class_masks: List[torch.Tensor] = []
+    for class_id in valid_class_ids:
+        class_masks.append((semantic_map == class_id).to(torch.float32))
+
+    return valid_class_ids.to(torch.long), torch.stack(class_masks, dim=0)
 
 
 def outputs_to_semantic_predictions(
@@ -578,7 +581,6 @@ def resume_if_needed(
     best_val_miou = float(checkpoint.get("best_val_miou", float("-inf")))
     print(f"Resumed from epoch {start_epoch}.")
     return start_epoch, best_val_loss, best_val_miou
-
 
 
 

@@ -189,9 +189,7 @@ def parse_args() -> argparse.Namespace:
 ############################################################
 #              Segmentation Metrics And Logging            #
 ############################################################
-def semantic_map_to_targets(
-    semantic_map: torch.Tensor, ignore_index: int
-) -> Tuple[torch.Tensor, torch.Tensor]:
+def semantic_map_to_targets(semantic_map: torch.Tensor, ignore_index: int) -> Tuple[torch.Tensor, torch.Tensor]:
     class_ids = torch.unique(semantic_map)
     valid_class_ids = class_ids[class_ids != ignore_index]
 
@@ -210,9 +208,7 @@ def semantic_map_to_targets(
     return valid_class_ids.to(torch.long), torch.stack(class_masks, dim=0)
 
 
-def outputs_to_semantic_predictions(
-    outputs, target_size: Tuple[int, int]
-) -> torch.Tensor:
+def outputs_to_semantic_predictions(outputs, target_size: Tuple[int, int]) -> torch.Tensor: # Convert the model's query-based outputs into the final semantic segmentation map.
     class_logits = outputs.class_queries_logits[..., :-1]
     mask_logits = outputs.masks_queries_logits
 
@@ -236,6 +232,7 @@ def update_confusion_matrix(
     num_classes: int,
     ignore_index: int,
 ) -> None:
+    
     valid_mask = targets != ignore_index
     if not torch.any(valid_mask):
         return
@@ -274,6 +271,7 @@ def save_checkpoint(
     best_val_miou: float,
     args: argparse.Namespace,
 ) -> None:
+    
     payload = {
         "epoch": epoch,
         "best_val_loss": best_val_loss,
@@ -286,14 +284,12 @@ def save_checkpoint(
     torch.save(payload, save_path)
 
 
-def metric_checkpoint_path(
-    run_dir: Path, prefix: str, epoch: int, score: float, higher_is_better: bool
-) -> Path:
+def metric_checkpoint_path(run_dir: Path, prefix: str, epoch: int, score: float, higher_is_better: bool) -> Path:
     metric_name = "miou" if higher_is_better else "loss"
     return run_dir / f"{prefix}_epoch_{epoch + 1:03d}_{metric_name}_{score:.4f}.pt"
 
 
-def ensure_epoch_log_file(log_path: Path) -> None:
+def ensure_epoch_log_file(log_path: Path) -> None: # Create the log CSV file.
     if log_path.exists():
         return
 
@@ -312,7 +308,7 @@ def ensure_epoch_log_file(log_path: Path) -> None:
         )
 
 
-def append_epoch_log(
+def append_epoch_log( # Append one row of epoch results to the CSV log file.
     log_path: Path,
     epoch: int,
     train_loss: float,
@@ -322,6 +318,7 @@ def append_epoch_log(
     best_val_loss: float,
     best_val_miou: float,
 ) -> None:
+    
     with open(log_path, "a", encoding="utf-8", newline="") as fp:
         writer = csv.writer(fp)
         writer.writerow(
@@ -337,7 +334,7 @@ def append_epoch_log(
         )
 
 
-def save_training_curves(log_path: Path, output_path: Path) -> None:
+def save_training_curves(log_path: Path, output_path: Path) -> None: # Save the loss and mIoU training curves as an image.
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -587,7 +584,7 @@ def resume_if_needed(
 ############################################################
 #                    Model Components                      #
 ############################################################
-class AdapterProjectionBlock(nn.Module): #Projects each ConvNeXt feature map into the feature space expected by Mask2Former
+class AdapterProjectionBlock(nn.Module): # Projects each ConvNeXt feature map into the feature space expected by Mask2Former
     def __init__( 
         self, 
         in_channels: int,
@@ -611,7 +608,7 @@ class AdapterProjectionBlock(nn.Module): #Projects each ConvNeXt feature map int
         return self.block(x) + self.residual(x)
 
 
-class MaskFeatureFusionHead(nn.Module): #Fuses multi-scale features into a high-resolution mask feature representation
+class MaskFeatureFusionHead(nn.Module): # Fuses multi-scale features into a high-resolution mask feature representation
     def __init__(
         self,
         feature_dim: int,
@@ -654,7 +651,7 @@ class MaskFeatureFusionHead(nn.Module): #Fuses multi-scale features into a high-
         return self.fusion(torch.cat(resized_levels, dim=1))
 
 
-class ConvNeXtPixelLevelModuleBoosted(nn.Module): #Replaces Mask2Former's pixel-level module with a ConvNeXt-based multi-scale feature extractor
+class ConvNeXtPixelLevelModuleBoosted(nn.Module): # Replaces Mask2Former's pixel-level module with a ConvNeXt-based multi-scale feature extractor
     def __init__(
         self,
         encoder: nn.Module,

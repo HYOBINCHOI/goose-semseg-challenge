@@ -836,20 +836,20 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
 
         encoder_config = AutoConfig.from_pretrained(
             args.convnext_model_name_or_path,
-            local_files_only=True,
+            local_files_only=False,
         )
         out_indices = tuple(sorted(set(args.feature_indices)))
 
         if encoder_config.model_type == "dinov3_convnext":
             encoder = AutoModel.from_pretrained(
                 args.convnext_model_name_or_path,
-                local_files_only=True,
+                local_files_only=False,
             )
         else:
             encoder = AutoBackbone.from_pretrained(
                 args.convnext_model_name_or_path,
                 out_indices=out_indices,
-                local_files_only=True,
+                local_files_only=False,
             )
 
         if args.freeze_encoder:

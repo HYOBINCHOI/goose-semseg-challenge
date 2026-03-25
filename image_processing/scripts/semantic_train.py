@@ -19,12 +19,10 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-DEFAULT_GOOSE_TOOLS_ROOT = str(
-    (Path(__file__).resolve().parent.parent / "image_processing").resolve()
-)
+DEFAULT_GOOSE_TOOLS_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
-def seed_everything(seed: int) -> None: # Seed all RNGs so data shuffling and training are reproducible.
+def seed_everything(seed: int) -> None: # Seed all RNGs so data shuffling and training are reproducible
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

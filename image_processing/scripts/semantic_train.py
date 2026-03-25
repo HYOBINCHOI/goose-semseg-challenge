@@ -2,6 +2,9 @@
 Training code for a tuned ConvNeXt + Mask2Former model.
 """
 
+############################################################
+#                   Setup And Utilities                    #
+############################################################
 import argparse
 import csv
 import json
@@ -37,7 +40,7 @@ def resolve_device(device_name: str) -> torch.device:
     return torch.device(device_name)
 
 
-def load_goose_dataset_class(goose_tools_root: str):
+def load_goose_dataset_class(goose_tools_root: str): # Load the GOOSE_Dataset class from the goosetools package
     goose_root = Path(goose_tools_root).resolve()
     if not goose_root.exists():
         raise FileNotFoundError(f"goose_tools_root does not exist: {goose_root}")
@@ -51,22 +54,18 @@ def load_goose_dataset_class(goose_tools_root: str):
 
 
 def resolve_goose_data_root(data_path: str) -> Path:
-    requested_root = Path(data_path).expanduser().resolve()
-    candidate_roots = [requested_root, requested_root / "goose-dataset"]
+    base_path = Path(data_path).expanduser().resolve()
 
-    for root in candidate_roots:
+    for root in (base_path, base_path / "goose-dataset"):
         if (root / "images" / "train").is_dir() and (root / "labels" / "train").is_dir():
             return root
 
-    checked_roots = ", ".join(str(root) for root in candidate_roots)
     raise FileNotFoundError(
-        "Could not find a valid GOOSE dataset root. "
-        "Expected 'images/train' and 'labels/train' under one of: "
-        f"{checked_roots}"
+        f"Could not find a valid GOOSE dataset root under {base_path}"
     )
 
 
-def default_output_dir() -> str:
+def default_output_dir() -> str:  # The default output directory needs to be updated
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return (
         "/home/mipstu/jiPark/challenge/goose_dataset/output/"
@@ -78,19 +77,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser("ConvNeXt + Mask2Former Trainer (boosted)")
 
     parser.add_argument("data_path", type=str, help="Path to goose dataset root")
-    parser.add_argument(
-        "--goose_tools_root",
-        type=str,
-        default=DEFAULT_GOOSE_TOOLS_ROOT,
-        help="Directory that contains the goosetools package.",
-    )
+    parser.add_argument( "--goose_tools_root", type=str, default=DEFAULT_GOOSE_TOOLS_ROOT, help="Directory that contains the goosetools package.")
     parser.add_argument("--output_dir", type=str, default=default_output_dir())
-    parser.add_argument(
-        "--run_name", type=str, default="convnext_mask2former"
-    )
+    parser.add_argument( "--run_name", type=str, default="convnext_mask2former")
 
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--prefetch_factor", type=int, default=1)
     parser.add_argument("--persistent_workers", action="store_true")
@@ -103,8 +95,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda")
 
-    parser.add_argument("--resize_width", type=int, default=1024)
-    parser.add_argument("--resize_height", type=int, default=1024)
+    parser.add_argument("--resize_width", type=int, default=224)
+    parser.add_argument("--resize_height", type=int, default=224)
     parser.add_argument("--crop", action="store_true")
     parser.add_argument("--num_classes", type=int, default=64)
     parser.add_argument("--ignore_index", type=int, default=255)
@@ -139,19 +131,21 @@ def parse_args() -> argparse.Namespace:
         help="Freeze pretrained Mask2Former transformer decoder and prediction heads.",
     )
 
-    parser.add_argument(
+    parser.add_argument( # Select which ConvNeXt stages to use as multi-scale features.
         "--feature_indices",
         type=int,
         nargs="+",
         default=[1, 2, 3],
         help="ConvNeXt stage indices selected as multi-scale features.",
     )
-    parser.add_argument(
+    parser.add_argument(  # Hidden channel size for the ConvNeXt-to-Mask2Former adapter.
         "--adapter_hidden_dim",
         type=int,
         default=256,
         help="Intermediate channel size in the ConvNeXt-to-Mask2Former adapter.",
     )
+    
+    ###Optional###
     parser.add_argument(
         "--adapter_dropout",
         type=float,
@@ -191,6 +185,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+
+############################################################
+#              Segmentation Metrics And Logging            #
+############################################################
 def semantic_map_to_targets(
     semantic_map: torch.Tensor, ignore_index: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -384,6 +382,10 @@ def save_training_curves(log_path: Path, output_path: Path) -> None:
     plt.close(fig)
 
 
+
+############################################################
+#            Data Loading And Batch Utilities              #
+############################################################
 class GooseMask2FormerCollator:
     def __init__(self, ignore_index: int):
         self.ignore_index = ignore_index
@@ -419,6 +421,10 @@ def move_batch_to_device(
     }
 
 
+
+############################################################
+#                   Training Utilities                     #
+############################################################
 class DINOInputNormalizer(nn.Module):
     def __init__(self, mean: Sequence[float], std: Sequence[float], enabled: bool):
         super().__init__()
@@ -574,6 +580,11 @@ def resume_if_needed(
     return start_epoch, best_val_loss, best_val_miou
 
 
+
+
+############################################################
+#                    Model Components                      #
+############################################################
 class AdapterProjectionBlock(nn.Module): #Projects each ConvNeXt feature map into the feature space expected by Mask2Former
     def __init__( 
         self, 
@@ -799,6 +810,10 @@ class ConvNeXtPixelLevelModuleBoosted(nn.Module): #Replaces Mask2Former's pixel-
         )
 
 
+
+############################################################
+#                     Model Definition                     #
+############################################################
 class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt and a pretrained Mask2Former, then combine them into a single model
     def __init__(
         self,
@@ -914,6 +929,10 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
         return self.mask2former(**kwargs)
 
 
+
+############################################################
+#                  Training Entry Point                    #
+############################################################
 def main() -> None:
     args = parse_args()
     seed_everything(args.seed)

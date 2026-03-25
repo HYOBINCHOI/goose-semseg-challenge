@@ -15,17 +15,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from PIL import Image
 from torch.optim import AdamW
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 DEFAULT_GOOSE_TOOLS_ROOT = str(
-    Path(__file__).resolve().parent.parent
+    (Path(__file__).resolve().parent.parent / "image_processing").resolve()
 )
 
 
-def seed_everything(seed: int) -> None:
+def seed_everything(seed: int) -> None: # Seed all RNGs so data shuffling and training are reproducible.
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -90,13 +89,6 @@ def semantic_map_to_targets(
 def outputs_to_semantic_predictions(
     outputs, target_size: Tuple[int, int]
 ) -> torch.Tensor:
-    semantic_logits = outputs_to_semantic_logits(outputs, target_size)
-    return semantic_logits.argmax(dim=1)
-
-
-def outputs_to_semantic_logits(
-    outputs, target_size: Tuple[int, int]
-) -> torch.Tensor:
     class_logits = outputs.class_queries_logits[..., :-1]
     mask_logits = outputs.masks_queries_logits
 
@@ -110,86 +102,7 @@ def outputs_to_semantic_logits(
             mode="bilinear",
             align_corners=False,
         )
-    return semantic_logits
-
-
-def build_sliding_window_positions(
-    full_size: int, window_size: int, stride: int
-) -> List[int]:
-    if window_size <= 0:
-        raise ValueError(f"window_size must be positive, got {window_size}")
-    if stride <= 0:
-        raise ValueError(f"stride must be positive, got {stride}")
-
-    if full_size <= window_size:
-        return [0]
-
-    positions = list(range(0, full_size - window_size + 1, stride))
-    last_position = full_size - window_size
-    if positions[-1] != last_position:
-        positions.append(last_position)
-    return positions
-
-
-def sliding_window_predict(
-    model: nn.Module,
-    pixel_values: torch.Tensor,
-    window_size: Tuple[int, int],
-    stride: Tuple[int, int],
-    device: torch.device,
-    use_amp: bool,
-) -> torch.Tensor:
-    batch_size, _, image_height, image_width = pixel_values.shape
-    window_height = min(window_size[0], image_height)
-    window_width = min(window_size[1], image_width)
-    stride_height = min(stride[0], window_height)
-    stride_width = min(stride[1], window_width)
-
-    y_positions = build_sliding_window_positions(
-        image_height, window_height, stride_height
-    )
-    x_positions = build_sliding_window_positions(
-        image_width, window_width, stride_width
-    )
-
-    predictions: List[torch.Tensor] = []
-    for batch_index in range(batch_size):
-        image = pixel_values[batch_index : batch_index + 1]
-        stitched_logits = None
-        overlap_counter = image.new_zeros((1, 1, image_height, image_width))
-
-        for top in y_positions:
-            bottom = top + window_height
-            for left in x_positions:
-                right = left + window_width
-                window = image[:, :, top:bottom, left:right]
-
-                with torch.amp.autocast(
-                    device_type=device.type,
-                    enabled=use_amp and device.type == "cuda",
-                ):
-                    window_outputs = model(pixel_values=window)
-                    window_logits = outputs_to_semantic_logits(
-                        window_outputs,
-                        target_size=(window.shape[-2], window.shape[-1]),
-                    )
-
-                if stitched_logits is None:
-                    num_classes = window_logits.shape[1]
-                    stitched_logits = image.new_zeros(
-                        (1, num_classes, image_height, image_width)
-                    )
-
-                stitched_logits[:, :, top:bottom, left:right] += window_logits
-                overlap_counter[:, :, top:bottom, left:right] += 1.0
-
-        if stitched_logits is None:
-            raise RuntimeError("Sliding-window prediction did not generate any tiles.")
-
-        stitched_logits = stitched_logits / overlap_counter.clamp_min(1.0)
-        predictions.append(stitched_logits.argmax(dim=1))
-
-    return torch.cat(predictions, dim=0)
+    return semantic_logits.argmax(dim=1)
 
 
 def update_confusion_matrix(
@@ -370,145 +283,6 @@ class GooseMask2FormerCollator:
             "class_labels": class_labels,
             "mask_labels": mask_labels,
         }
-
-
-class GooseSegmentationDataset(Dataset):
-    def __init__(
-        self,
-        base_dataset,
-        resize_size: Optional[Sequence[int]],
-        crop: bool,
-        is_train: bool,
-        ignore_index: int,
-        class_aware_crop: bool = False,
-        class_aware_min_pixels: int = 32,
-    ):
-        self.base_dataset = base_dataset
-        self.resize_size = list(resize_size) if resize_size is not None else None
-        self.crop = crop
-        self.is_train = is_train
-        self.ignore_index = ignore_index
-        self.class_aware_crop = class_aware_crop and is_train
-        self.class_aware_min_pixels = max(1, class_aware_min_pixels)
-
-        if self.crop and self.resize_size is None:
-            raise ValueError("resize_size must be set when crop is enabled.")
-
-    def __len__(self) -> int:
-        return len(self.base_dataset)
-
-    def _target_crop_size(self, width: int, height: int) -> Tuple[int, int]:
-        if not self.crop or self.resize_size is None:
-            return width, height
-
-        target_ratio = self.resize_size[0] / self.resize_size[1]
-        image_ratio = width / height
-
-        if image_ratio > target_ratio:
-            crop_height = height
-            crop_width = int(round(crop_height * target_ratio))
-        elif image_ratio < target_ratio:
-            crop_width = width
-            crop_height = int(round(crop_width / target_ratio))
-        else:
-            crop_width = width
-            crop_height = height
-
-        crop_width = max(1, min(crop_width, width))
-        crop_height = max(1, min(crop_height, height))
-        return crop_width, crop_height
-
-    def _center_crop_bounds(
-        self, width: int, height: int, crop_width: int, crop_height: int
-    ) -> Tuple[int, int, int, int]:
-        left = max((width - crop_width) // 2, 0)
-        top = max((height - crop_height) // 2, 0)
-        return left, top, crop_width, crop_height
-
-    def _sample_class_aware_bounds(
-        self, label: Image.Image, crop_width: int, crop_height: int
-    ) -> Optional[Tuple[int, int, int, int]]:
-        label_array = np.array(label, dtype=np.int64)
-        valid_mask = label_array != self.ignore_index
-        if not np.any(valid_mask):
-            return None
-
-        classes, counts = np.unique(label_array[valid_mask], return_counts=True)
-        keep_mask = counts >= self.class_aware_min_pixels
-        if np.any(keep_mask):
-            classes = classes[keep_mask]
-            counts = counts[keep_mask]
-
-        if classes.size == 0:
-            return None
-
-        sampling_weights = 1.0 / np.sqrt(counts.astype(np.float64))
-        sampling_weights /= sampling_weights.sum()
-        sampled_class = int(np.random.choice(classes, p=sampling_weights))
-
-        ys, xs = np.where(label_array == sampled_class)
-        if ys.size == 0:
-            return None
-
-        sampled_index = int(np.random.randint(0, ys.size))
-        anchor_x = int(xs[sampled_index])
-        anchor_y = int(ys[sampled_index])
-
-        width, height = label.size
-        max_left = max(width - crop_width, 0)
-        max_top = max(height - crop_height, 0)
-
-        left_min = max(anchor_x - crop_width + 1, 0)
-        left_max = min(anchor_x, max_left)
-        top_min = max(anchor_y - crop_height + 1, 0)
-        top_max = min(anchor_y, max_top)
-
-        if left_min <= left_max:
-            left = random.randint(left_min, left_max)
-        else:
-            left = min(max(anchor_x - crop_width // 2, 0), max_left)
-
-        if top_min <= top_max:
-            top = random.randint(top_min, top_max)
-        else:
-            top = min(max(anchor_y - crop_height // 2, 0), max_top)
-
-        return left, top, crop_width, crop_height
-
-    def _crop_and_resize(
-        self,
-        image: Image.Image,
-        label: Image.Image,
-    ) -> Tuple[Image.Image, Image.Image]:
-        crop_width, crop_height = self._target_crop_size(image.width, image.height)
-
-        crop_bounds = None
-        if self.class_aware_crop and self.crop:
-            crop_bounds = self._sample_class_aware_bounds(label, crop_width, crop_height)
-
-        if crop_bounds is None:
-            crop_bounds = self._center_crop_bounds(
-                image.width, image.height, crop_width, crop_height
-            )
-
-        left, top, crop_width, crop_height = crop_bounds
-        image = image.crop((left, top, left + crop_width, top + crop_height))
-        label = label.crop((left, top, left + crop_width, top + crop_height))
-
-        if self.resize_size is not None:
-            image = image.resize(tuple(self.resize_size), resample=Image.BILINEAR)
-            label = label.resize(tuple(self.resize_size), resample=Image.NEAREST)
-
-        return image, label
-
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        image, label, _, _ = self.base_dataset.get_images(index)
-        image, label = self._crop_and_resize(image, label)
-
-        image_array = np.asarray(image, dtype=np.float32)
-        image_tensor = torch.from_numpy(image_array.transpose(2, 0, 1)) / 255.0
-        label_tensor = torch.from_numpy(np.asarray(label, dtype=np.int64)).long()
-        return image_tensor, label_tensor
 
 
 def move_batch_to_device(
@@ -708,8 +482,6 @@ def run_epoch(
     epoch_index: int,
     total_epochs: int,
     global_progress: tqdm,
-    sliding_window_size: Optional[Tuple[int, int]] = None,
-    sliding_window_stride: Optional[Tuple[int, int]] = None,
 ) -> Tuple[float, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -753,24 +525,9 @@ def run_epoch(
 
         total_loss += float(loss.item())
 
-        use_sliding_window = (
-            not is_train
-            and sliding_window_size is not None
-            and sliding_window_stride is not None
+        predictions = outputs_to_semantic_predictions(
+            outputs, target_size=batch["semantic_maps"].shape[-2:]
         )
-        if use_sliding_window:
-            predictions = sliding_window_predict(
-                model=model,
-                pixel_values=batch["pixel_values"],
-                window_size=sliding_window_size,
-                stride=sliding_window_stride,
-                device=device,
-                use_amp=use_amp,
-            )
-        else:
-            predictions = outputs_to_semantic_predictions(
-                outputs, target_size=batch["semantic_maps"].shape[-2:]
-            )
         update_confusion_matrix(
             confusion_matrix=confusion_matrix,
             predictions=predictions,
@@ -837,11 +594,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output_dir", type=str, default=default_output_dir())
     parser.add_argument(
-        "--run_name", type=str, default="convnext_mask2former11"
+        "--run_name", type=str, default="convnext_mask2former"
     )
 
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--prefetch_factor", type=int, default=1)
     parser.add_argument("--persistent_workers", action="store_true")
@@ -854,20 +611,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda")
 
-    parser.add_argument("--resize_width", type=int, default=512)
-    parser.add_argument("--resize_height", type=int, default=512)
+    parser.add_argument("--resize_width", type=int, default=1024)
+    parser.add_argument("--resize_height", type=int, default=1024)
     parser.add_argument("--crop", action="store_true")
-    parser.add_argument(
-        "--class_aware_crop",
-        action="store_true",
-        help="Sample training crops around classes present in the semantic map.",
-    )
-    parser.add_argument(
-        "--class_aware_min_pixels",
-        type=int,
-        default=32,
-        help="Minimum pixel count required for a class to be considered as a crop anchor.",
-    )
     parser.add_argument("--num_classes", type=int, default=64)
     parser.add_argument("--ignore_index", type=int, default=255)
 
@@ -954,28 +700,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--early_stopping_patience", type=int, default=15)
     parser.add_argument("--early_stopping_min_delta", type=float, default=1e-4)
     parser.add_argument("--save_every", type=int, default=1)
-    parser.add_argument(
-        "--sliding_window_size",
-        type=int,
-        nargs=2,
-        metavar=("HEIGHT", "WIDTH"),
-        default=None,
-        help=(
-            "Optional sliding-window size used for validation prediction stitching. "
-            "If omitted, validation uses a single full-image forward pass."
-        ),
-    )
-    parser.add_argument(
-        "--sliding_window_stride",
-        type=int,
-        nargs=2,
-        metavar=("HEIGHT_STEP", "WIDTH_STEP"),
-        default=None,
-        help=(
-            "Optional sliding-window stride for validation prediction stitching. "
-            "Defaults to the window size when --sliding_window_size is set."
-        ),
-    )
 
     parser.set_defaults(freeze_encoder=True)
     return parser.parse_args()
@@ -1335,48 +1059,19 @@ def main() -> None:
     args = parse_args()
     seed_everything(args.seed)
 
-    if args.sliding_window_size is not None and args.sliding_window_stride is None:
-        args.sliding_window_stride = list(args.sliding_window_size)
-    if args.sliding_window_stride is not None and args.sliding_window_size is None:
-        raise ValueError(
-            "--sliding_window_stride requires --sliding_window_size to be set."
-        )
-
     device = resolve_device(args.device)
     goose_dataset_class = load_goose_dataset_class(args.goose_tools_root)
     data_root = resolve_goose_data_root(args.data_path)
 
-    base_train_dataset, base_val_dataset = goose_dataset_class.splits_from_path(
+    train_dataset, val_dataset = goose_dataset_class.splits_from_path(
         str(data_root),
-        resize_size=None,
-        crop=False,
-    )
-
-    resize_size = [args.resize_width, args.resize_height]
-    train_dataset = GooseSegmentationDataset(
-        base_dataset=base_train_dataset,
-        resize_size=resize_size,
-        crop=args.crop or args.class_aware_crop,
-        is_train=True,
-        ignore_index=args.ignore_index,
-        class_aware_crop=args.class_aware_crop,
-        class_aware_min_pixels=args.class_aware_min_pixels,
-    )
-    val_dataset = GooseSegmentationDataset(
-        base_dataset=base_val_dataset,
-        resize_size=resize_size,
+        resize_size=[args.resize_width, args.resize_height],
         crop=args.crop,
-        is_train=False,
-        ignore_index=args.ignore_index,
     )
 
     print(f"Resolved GOOSE dataset root: {data_root}")
     print(
         f"Loaded {len(train_dataset)} training samples and {len(val_dataset)} validation samples."
-    )
-    print(
-        "Training crop policy: "
-        f"{'class-aware crop' if args.class_aware_crop else 'center crop' if args.crop else 'resize only'}"
     )
 
     collator = GooseMask2FormerCollator(ignore_index=args.ignore_index) 
@@ -1457,8 +1152,6 @@ def main() -> None:
                 epoch_index=epoch,
                 total_epochs=args.epochs,
                 global_progress=global_progress,
-                sliding_window_size=None,
-                sliding_window_stride=None,
             )
             val_loss, val_miou = run_epoch(
                 model=model,
@@ -1473,16 +1166,6 @@ def main() -> None:
                 epoch_index=epoch,
                 total_epochs=args.epochs,
                 global_progress=global_progress,
-                sliding_window_size=(
-                    tuple(args.sliding_window_size)
-                    if args.sliding_window_size is not None
-                    else None
-                ),
-                sliding_window_stride=(
-                    tuple(args.sliding_window_stride)
-                    if args.sliding_window_stride is not None
-                    else None
-                ),
             )
 
             print(

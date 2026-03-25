@@ -38,7 +38,7 @@ This will install and activate a conda environment with the necessary dependenci
 
 **Example usage of `semantic_train.py`**
 ```bash
-python semantic_train.py /path/to/goosedataset --epochs 100 --batch_size 64 -resize_width 512 -resize_height 512
+python semantic_train.py /path/to/goosedataset --epochs 100 --batch_size 64 --resize_width 512 --resize_height 512
 ```
 
 ### 2D Semantic Evaluation

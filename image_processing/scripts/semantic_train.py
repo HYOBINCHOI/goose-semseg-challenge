@@ -861,7 +861,7 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
         try:
             processor = AutoImageProcessor.from_pretrained(
                 args.convnext_model_name_or_path,
-                local_files_only=True,
+                local_files_only=False,
             )
             image_mean = getattr(processor, "image_mean", image_mean)
             image_std = getattr(processor, "image_std", image_std)
@@ -885,7 +885,7 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
             id2label=id2label,
             label2id=label2id,
             ignore_mismatched_sizes=True,
-            local_files_only=True,
+            local_files_only=False,
         )
 
         feature_dim = self.mask2former.config.feature_size

@@ -68,6 +68,131 @@ def resolve_goose_data_root(data_path: str) -> Path:
     )
 
 
+def default_output_dir() -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return (
+        "/home/mipstu/jiPark/challenge/goose_dataset/output/"
+        f"{timestamp}"
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser("ConvNeXt + Mask2Former Trainer (boosted)")
+
+    parser.add_argument("data_path", type=str, help="Path to goose dataset root")
+    parser.add_argument(
+        "--goose_tools_root",
+        type=str,
+        default=DEFAULT_GOOSE_TOOLS_ROOT,
+        help="Directory that contains the goosetools package.",
+    )
+    parser.add_argument("--output_dir", type=str, default=default_output_dir())
+    parser.add_argument(
+        "--run_name", type=str, default="convnext_mask2former"
+    )
+
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--prefetch_factor", type=int, default=1)
+    parser.add_argument("--persistent_workers", action="store_true")
+    parser.add_argument("--disable_pin_memory", action="store_true")
+    parser.add_argument("--lr", type=float, default=3e-5)
+    parser.add_argument("--encoder_lr", type=float, default=1e-5)
+    parser.add_argument("--weight_decay", type=float, default=0.05)
+    parser.add_argument("--grad_clip_norm", type=float, default=1.0)
+    parser.add_argument("--amp", action="store_true")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", type=str, default="cuda")
+
+    parser.add_argument("--resize_width", type=int, default=1024)
+    parser.add_argument("--resize_height", type=int, default=1024)
+    parser.add_argument("--crop", action="store_true")
+    parser.add_argument("--num_classes", type=int, default=64)
+    parser.add_argument("--ignore_index", type=int, default=255)
+
+    parser.add_argument(
+        "--convnext_model_name_or_path",
+        type=str,
+        default="facebook/dinov3-convnext-large-pretrain-lvd1689m",
+        help="Pretrained ConvNeXt backbone checkpoint.",
+    )
+    parser.add_argument(
+        "--mask2former_pretrained_model_name_or_path",
+        type=str,
+        default="facebook/mask2former-swin-large-ade-semantic",
+        help="Pretrained Mask2Former checkpoint for decoder/heads initialization.",
+    )
+    parser.add_argument(
+        "--freeze_encoder",
+        dest="freeze_encoder",
+        action="store_true",
+        help="Freeze the ConvNeXt encoder.",
+    )
+    parser.add_argument(
+        "--unfreeze_encoder",
+        dest="freeze_encoder",
+        action="store_false",
+        help="Train the full ConvNeXt encoder with a lower lr.",
+    )
+    parser.add_argument(
+        "--freeze_mask2former_decoder",
+        action="store_true",
+        help="Freeze pretrained Mask2Former transformer decoder and prediction heads.",
+    )
+
+    parser.add_argument(
+        "--feature_indices",
+        type=int,
+        nargs="+",
+        default=[1, 2, 3],
+        help="ConvNeXt stage indices selected as multi-scale features.",
+    )
+    parser.add_argument(
+        "--adapter_hidden_dim",
+        type=int,
+        default=256,
+        help="Intermediate channel size in the ConvNeXt-to-Mask2Former adapter.",
+    )
+    parser.add_argument(
+        "--adapter_dropout",
+        type=float,
+        default=0.10,
+        help="Spatial dropout used inside each adapter block.",
+    )
+    parser.add_argument(
+        "--fusion_dropout",
+        type=float,
+        default=0.10,
+        help="Spatial dropout used in the mask-feature fusion head.",
+    )
+    parser.add_argument(
+        "--mask_feature_fusion_levels",
+        type=int,
+        default=2,
+        help="Number of highest-resolution levels fused for mask feature generation.",
+    )
+
+    parser.add_argument(
+        "--disable_encoder_norm",
+        action="store_true",
+        help="Disable ConvNeXt normalization from AutoImageProcessor stats.",
+    )
+
+    parser.add_argument(
+        "--resume_from",
+        type=str,
+        default=None,
+        help="Resume training from a checkpoint created by this script.",
+    )
+    parser.add_argument("--early_stopping_patience", type=int, default=15)
+    parser.add_argument("--early_stopping_min_delta", type=float, default=1e-4)
+    parser.add_argument("--save_every", type=int, default=1)
+
+    parser.set_defaults(freeze_encoder=True)
+    return parser.parse_args()
+
+
 def semantic_map_to_targets(
     semantic_map: torch.Tensor, ignore_index: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -449,131 +574,6 @@ def resume_if_needed(
     best_val_miou = float(checkpoint.get("best_val_miou", float("-inf")))
     print(f"Resumed from epoch {start_epoch}.")
     return start_epoch, best_val_loss, best_val_miou
-
-
-def default_output_dir() -> str:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return (
-        "/home/mipstu/jiPark/challenge/goose_dataset/output/"
-        f"{timestamp}"
-    )
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser("ConvNeXt + Mask2Former Trainer (boosted)")
-
-    parser.add_argument("data_path", type=str, help="Path to goose dataset root")
-    parser.add_argument(
-        "--goose_tools_root",
-        type=str,
-        default=DEFAULT_GOOSE_TOOLS_ROOT,
-        help="Directory that contains the goosetools package.",
-    )
-    parser.add_argument("--output_dir", type=str, default=default_output_dir())
-    parser.add_argument(
-        "--run_name", type=str, default="convnext_mask2former"
-    )
-
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--prefetch_factor", type=int, default=1)
-    parser.add_argument("--persistent_workers", action="store_true")
-    parser.add_argument("--disable_pin_memory", action="store_true")
-    parser.add_argument("--lr", type=float, default=3e-5)
-    parser.add_argument("--encoder_lr", type=float, default=1e-5)
-    parser.add_argument("--weight_decay", type=float, default=0.05) 
-    parser.add_argument("--grad_clip_norm", type=float, default=1.0) 
-    parser.add_argument("--amp", action="store_true")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="cuda")
-
-    parser.add_argument("--resize_width", type=int, default=1024)
-    parser.add_argument("--resize_height", type=int, default=1024)
-    parser.add_argument("--crop", action="store_true")
-    parser.add_argument("--num_classes", type=int, default=64)
-    parser.add_argument("--ignore_index", type=int, default=255)
-
-    parser.add_argument(
-        "--convnext_model_name_or_path",
-        type=str,
-        default="facebook/dinov3-convnext-large-pretrain-lvd1689m",
-        help="Pretrained ConvNeXt backbone checkpoint.",
-    )
-    parser.add_argument(
-        "--mask2former_pretrained_model_name_or_path",
-        type=str,
-        default="facebook/mask2former-swin-large-ade-semantic",
-        help="Pretrained Mask2Former checkpoint for decoder/heads initialization.",
-    )
-    parser.add_argument(
-        "--freeze_encoder",
-        dest="freeze_encoder",
-        action="store_true",
-        help="Freeze the ConvNeXt encoder.",
-    )
-    parser.add_argument(
-        "--unfreeze_encoder",
-        dest="freeze_encoder",
-        action="store_false",
-        help="Train the full ConvNeXt encoder with a lower lr.",
-    )
-    parser.add_argument(
-        "--freeze_mask2former_decoder",
-        action="store_true",
-        help="Freeze pretrained Mask2Former transformer decoder and prediction heads.",
-    )
-
-    parser.add_argument( # Selects which ConvNeXt stages to use as multi-scale feature inputs
-        "--feature_indices",
-        type=int,
-        nargs="+",
-        default=[1, 2, 3],
-        help="ConvNeXt stage indices selected as multi-scale features.",
-    )
-    parser.add_argument(
-        "--adapter_hidden_dim",
-        type=int,
-        default=256,
-        help="Intermediate channel size in the ConvNeXt-to-Mask2Former adapter.",
-    )
-    parser.add_argument(
-        "--adapter_dropout",
-        type=float,
-        default=0.10,
-        help="Spatial dropout used inside each adapter block.",
-    )
-    parser.add_argument(
-        "--fusion_dropout",
-        type=float,
-        default=0.10,
-        help="Spatial dropout used in the mask-feature fusion head.",
-    )
-    parser.add_argument(
-        "--mask_feature_fusion_levels",
-        type=int,
-        default=2,
-        help="Number of highest-resolution levels fused for mask feature generation.",
-    )
-
-    parser.add_argument(
-        "--disable_encoder_norm",
-        action="store_true",
-        help="Disable ConvNeXt normalization from AutoImageProcessor stats.",
-    )
-
-    parser.add_argument(
-        "--resume_from",
-        type=str,
-        default=None,
-        help="Resume training from a checkpoint created by this script.",
-    )
-    parser.add_argument("--early_stopping_patience", type=int, default=15)
-    parser.add_argument("--early_stopping_min_delta", type=float, default=1e-4)
-    parser.add_argument("--save_every", type=int, default=1)
-
-    parser.set_defaults(freeze_encoder=True)
-    return parser.parse_args()
 
 
 class AdapterProjectionBlock(nn.Module): #Projects each ConvNeXt feature map into the feature space expected by Mask2Former

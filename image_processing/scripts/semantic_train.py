@@ -296,13 +296,6 @@ def move_batch_to_device(
     }
 
 
-def rgb_to_gray(image: torch.Tensor) -> torch.Tensor:
-    if image.shape[1] == 1:
-        return image
-    weights = image.new_tensor([0.299, 0.587, 0.114]).view(1, 3, 1, 1)
-    return (image * weights).sum(dim=1, keepdim=True)
-
-
 class DINOInputNormalizer(nn.Module):
     def __init__(self, mean: Sequence[float], std: Sequence[float], enabled: bool):
         super().__init__()
@@ -318,122 +311,6 @@ class DINOInputNormalizer(nn.Module):
         if x.max().detach().item() > 1.5:
             x = x / 255.0
         return (x - self.mean) / self.std
-
-
-class CSECPseudoNormalGenerator(nn.Module):
-    def __init__(self, hidden_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(9, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, 3, kernel_size=1),
-        )
-
-    def forward(
-        self,
-        image: torch.Tensor,
-        brightened: torch.Tensor,
-        darkened: torch.Tensor,
-    ) -> torch.Tensor:
-        logits = self.net(torch.cat([image, brightened, darkened], dim=1))
-        weights = torch.softmax(logits, dim=1)
-        return (
-            image * weights[:, 0:1]
-            + brightened * weights[:, 1:2]
-            + darkened * weights[:, 2:3]
-        )
-
-
-class COSECorrection(nn.Module):
-    def __init__(self, hidden_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(6, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, 3, kernel_size=1),
-        )
-
-    def forward(self, pseudo_normal: torch.Tensor, shifted: torch.Tensor) -> torch.Tensor:
-        shift_delta = self.net(torch.cat([pseudo_normal, shifted], dim=1))
-        return torch.clamp(shifted + shift_delta, 0.0, 1.0)
-
-
-class COMOModulation(nn.Module):
-    def __init__(self, hidden_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(9, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, 3, kernel_size=1),
-        )
-
-    def forward(
-        self,
-        pseudo_normal: torch.Tensor,
-        corrected_bright: torch.Tensor,
-        corrected_dark: torch.Tensor,
-    ) -> torch.Tensor:
-        logits = self.net(
-            torch.cat([pseudo_normal, corrected_bright, corrected_dark], dim=1)
-        )
-        weights = torch.softmax(logits, dim=1)
-        return (
-            pseudo_normal * weights[:, 0:1]
-            + corrected_bright * weights[:, 1:2]
-            + corrected_dark * weights[:, 2:3]
-        )
-
-
-class CSECFrontend(nn.Module):
-    def __init__(self, hidden_dim: int):
-        super().__init__()
-        self.illumination_net = nn.Sequential(
-            nn.Conv2d(3, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, 1, kernel_size=1),
-            nn.Sigmoid(),
-        )
-        self.inverse_illumination_net = nn.Sequential(
-            nn.Conv2d(3, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden_dim, 1, kernel_size=1),
-            nn.Sigmoid(),
-        )
-        self.pseudo_normal_generator = CSECPseudoNormalGenerator(hidden_dim)
-        self.bright_cose = COSECorrection(hidden_dim)
-        self.dark_cose = COSECorrection(hidden_dim)
-        self.como = COMOModulation(hidden_dim)
-
-    def decompose(self, image: torch.Tensor, illumination: torch.Tensor) -> torch.Tensor:
-        denom = torch.maximum(image, illumination) + 1e-6
-        return torch.clamp(image / denom, 0.0, 1.0)
-
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
-        inverse_image = 1.0 - image
-
-        illumination = rgb_to_gray(self.illumination_net(image))
-        inverse_illumination = rgb_to_gray(self.inverse_illumination_net(inverse_image))
-
-        brightened = self.decompose(image, illumination)
-        inverse_darkened = self.decompose(inverse_image, inverse_illumination)
-        darkened = 1.0 - inverse_darkened
-
-        pseudo_normal = self.pseudo_normal_generator(image, brightened, darkened)
-        corrected_bright = self.bright_cose(pseudo_normal, brightened)
-        corrected_dark = self.dark_cose(pseudo_normal, darkened)
-        enhanced = self.como(pseudo_normal, corrected_bright, corrected_dark)
-
-        return torch.clamp(enhanced, 0.0, 1.0)
 
 
 def build_optimizer(args: argparse.Namespace, model: nn.Module) -> AdamW:
@@ -680,12 +557,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--use_csec_frontend",
-        action="store_true",
-        help="Apply a lightweight CSEC-inspired frontend before the ConvNeXt encoder.",
-    )
-    parser.add_argument("--csec_hidden_dim", type=int, default=32)
-    parser.add_argument(
         "--disable_encoder_norm",
         action="store_true",
         help="Disable ConvNeXt normalization from AutoImageProcessor stats.",
@@ -776,7 +647,6 @@ class ConvNeXtPixelLevelModuleBoosted(nn.Module): #Replaces Mask2Former's pixel-
     def __init__(
         self,
         encoder: nn.Module,
-        frontend: nn.Module,
         normalizer: nn.Module,
         feature_indices: Sequence[int],
         encoder_hidden_sizes: Sequence[int],
@@ -789,7 +659,6 @@ class ConvNeXtPixelLevelModuleBoosted(nn.Module): #Replaces Mask2Former's pixel-
     ):
         super().__init__()
         self.encoder = encoder
-        self.frontend = frontend
         self.normalizer = normalizer
         self.feature_indices = list(feature_indices)
         self.encoder_hidden_sizes = list(encoder_hidden_sizes)
@@ -892,8 +761,7 @@ class ConvNeXtPixelLevelModuleBoosted(nn.Module): #Replaces Mask2Former's pixel-
                 "transformers is required. Install with `pip install transformers`."
             ) from exc
 
-        enhanced_pixel_values = self.frontend(pixel_values)
-        normalized_pixel_values = self.normalizer(enhanced_pixel_values)
+        normalized_pixel_values = self.normalizer(pixel_values)
 
         encoder_outputs = self.encoder(
             pixel_values=normalized_pixel_values,
@@ -976,12 +844,6 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
             for parameter in encoder.parameters():
                 parameter.requires_grad = False
 
-        frontend = (
-            CSECFrontend(args.csec_hidden_dim)
-            if args.use_csec_frontend
-            else nn.Identity()
-        )
-
         image_mean = [0.485, 0.456, 0.406]
         image_std = [0.229, 0.224, 0.225]
         try:
@@ -1034,7 +896,6 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
 
         self.mask2former.model.pixel_level_module = ConvNeXtPixelLevelModuleBoosted(  # Replaces the original pixel-level module with the ConvNeXt-based module
             encoder=encoder,
-            frontend=frontend,
             normalizer=normalizer,
             feature_indices=args.feature_indices,
             encoder_hidden_sizes=encoder_hidden_sizes,

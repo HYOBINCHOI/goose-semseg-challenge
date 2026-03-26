@@ -151,12 +151,14 @@ class GOOSE_Dataset(Dataset):
 
         self.with_instances = with_instances
 
-    def preprocess(self, image):
+    def preprocess(self, image, is_label=False):
         """
         Performs a central crop and rescaling of the image
 
         Parameters:
-            image   [PIL.Image]   :   Image to preprocess
+            image      [PIL.Image]   :   Image to preprocess
+            is_label   [bool]        :   If True, use NEAREST resampling;
+                                         otherwise use BILINEAR.
         """
         if image is None:
             return None
@@ -179,8 +181,8 @@ class GOOSE_Dataset(Dataset):
             image = transforms.CenterCrop((nh, nw)).forward(image)
 
         if self.resize_size is not None:
-            # Resize to given size
-            image = image.resize(self.resize_size, resample=Image.NEAREST)
+            resample = Image.NEAREST if is_label else Image.BILINEAR
+            image = image.resize(self.resize_size, resample=resample)
 
         return image
 
@@ -196,8 +198,8 @@ class GOOSE_Dataset(Dataset):
         image = Image.open(self.dataset_dict[i]["img_path"]).convert("RGB")
         label = Image.open(self.dataset_dict[i]["semantic_path"]).convert("L")
 
-        image = self.preprocess(image)
-        label = self.preprocess(label)
+        image = self.preprocess(image, is_label=False)
+        label = self.preprocess(label, is_label=True)
 
         image_tensor = self.transforms(image)
         label_tensor = torch.from_numpy(np.array(label)).long()
@@ -205,7 +207,7 @@ class GOOSE_Dataset(Dataset):
         if self.with_instances:
             instances = Image.open(
                 self.dataset_dict[i]["instance_path"]).convert("L")
-            instances = self.preprocess(instances)
+            instances = self.preprocess(instances, is_label=True)
 
             instances_tensor = torch.from_numpy(np.array(instances)).long()
 

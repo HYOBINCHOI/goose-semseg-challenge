@@ -4,8 +4,10 @@ GT vs Prediction visualization for ConvNeXt + Mask2Former checkpoints.
 """
 
 import argparse
+import csv
 import importlib.util
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -19,12 +21,17 @@ from tqdm import tqdm
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 if not hasattr(torch.amp, "GradScaler"):
     torch.amp.GradScaler = torch.cuda.amp.GradScaler  
 
 
 def load_module(module_name: str, module_path: Path):
+    module_dir = str(module_path.parent.resolve())
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Failed to load module {module_name} from {module_path}")
@@ -34,26 +41,8 @@ def load_module(module_name: str, module_path: Path):
     return module
 
 
-def load_train_modules():
-    m2f_module = load_module("mask2former_train", SCRIPT_DIR / "mask2former_train.py")
-    convnext_module = load_module(
-        "convnext_mask2former_train_512_64",
-        SCRIPT_DIR / "convnext_mask2former_train_512_64.py",
-    )
-    boosted_module = load_module(
-        "convnext_mask2former_train_512_64_boosted",
-        SCRIPT_DIR / "convnext_mask2former_train_512_64_boosted.py",
-    )
-    return m2f_module, convnext_module, boosted_module
-
-
-M2F_MODULE, CONVNEXT_MODULE, BOOSTED_MODULE = load_train_modules()
-
-ConvNeXtMask2FormerModel = CONVNEXT_MODULE.ConvNeXtMask2FormerModel
-ConvNeXtMask2FormerBoostedModel = BOOSTED_MODULE.ConvNeXtMask2FormerBoostedModel
-outputs_to_semantic_predictions = M2F_MODULE.outputs_to_semantic_predictions
-load_goose_dataset_class = M2F_MODULE.load_goose_dataset_class
-DEFAULT_GOOSE_TOOLS_ROOT = M2F_MODULE.DEFAULT_GOOSE_TOOLS_ROOT
+DEFAULT_GOOSE_TOOLS_ROOT = str(PROJECT_ROOT)
+TRAIN_SCRIPTS_DIR = SCRIPT_DIR
 
 
 def load_colormap(colormap_path: str) -> Dict[int, Tuple[int, int, int]]:
@@ -89,31 +78,94 @@ def overlay_segmentation(
 
 
 def build_convnext_model(
+    module,
     args: argparse.Namespace,
     id2label: Dict[int, str],
     label2id: Dict[str, int],
 ) -> torch.nn.Module:
-    run_name = getattr(args, "run_name", "")
-    output_dir = getattr(args, "output_dir", "")
+    for class_name in (
+        "ConvNeXtMask2FormerBoostedModel",
+        "ConvNeXtMask2FormerModel",
+        "DinoV3Mask2FormerModel",
+    ):
+        if hasattr(module, class_name):
+            return getattr(module, class_name)(args, id2label, label2id)
+    raise ValueError("Could not find a compatible model class in the training script.")
+
+
+def outputs_to_semantic_predictions(outputs, target_size: Tuple[int, int]) -> torch.Tensor:
+    class_logits = outputs.class_queries_logits[..., :-1]
+    mask_logits = outputs.masks_queries_logits
+
+    class_probs = torch.softmax(class_logits, dim=-1)
+    mask_probs = torch.sigmoid(mask_logits)
+    semantic_logits = torch.einsum("bqc,bqhw->bchw", class_probs, mask_probs)
+    if semantic_logits.shape[-2:] != target_size:
+        semantic_logits = torch.nn.functional.interpolate(
+            semantic_logits,
+            size=target_size,
+            mode="bilinear",
+            align_corners=False,
+        )
+    return semantic_logits.argmax(dim=1)
+
+
+def load_goose_dataset_class(goose_tools_root: str):
+    goose_root = Path(goose_tools_root).resolve()
+    if not goose_root.exists():
+        raise FileNotFoundError(f"goose_tools_root does not exist: {goose_root}")
+    if str(goose_root) not in sys.path:
+        sys.path.insert(0, str(goose_root))
+    from goosetools import GOOSE_Dataset
+    return GOOSE_Dataset
+
+
+def infer_train_script_name(checkpoint_args: dict) -> str:
+    run_name = str(checkpoint_args.get("run_name", ""))
+    output_dir = str(checkpoint_args.get("output_dir", ""))
     checkpoint_hint = " ".join([run_name, output_dir]).lower()
-    if "boosted" in checkpoint_hint:
-        return ConvNeXtMask2FormerBoostedModel(args, id2label, label2id)
-    return ConvNeXtMask2FormerModel(args, id2label, label2id)
+    if "convnext_mask2former" in checkpoint_hint:
+        return "semantic_train_convnext.py"
+    if "dinov3_mask2former_regularized" in checkpoint_hint:
+        return "dinov3_mask2former_train_regularized.py"
+    if "dinov3" in checkpoint_hint:
+        return "dinov3_mask2former_train_512_64.py"
+    raise ValueError(
+        "Could not infer the training script from checkpoint args. "
+        f"run_name={run_name}, output_dir={output_dir}"
+    )
+
+
+def resolve_train_script_path(script_name: str, extra_dirs) -> Path:
+    candidate_dirs = [TRAIN_SCRIPTS_DIR, *(Path(directory) for directory in extra_dirs)]
+    for directory in candidate_dirs:
+        script_path = directory / script_name
+        if script_path.exists():
+            return script_path
+    raise FileNotFoundError(
+        f"Could not find training script {script_name} in: "
+        + ", ".join(str(directory) for directory in candidate_dirs)
+    )
 
 
 def load_model_from_checkpoint(
-    checkpoint_path: str, device: torch.device
+    checkpoint_path: str,
+    device: torch.device,
+    train_script_dirs,
 ) -> Tuple[torch.nn.Module, argparse.Namespace]:
     print(f"Loading checkpoint: {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=device)
 
     raw_args = ckpt["args"]
     args = argparse.Namespace(**raw_args)
+    script_name = infer_train_script_name(raw_args)
+    script_path = resolve_train_script_path(script_name, train_script_dirs)
+    train_module = load_module(f"compare_gt_{script_name.replace('.', '_')}", script_path)
 
     id2label = {i: f"class_{i}" for i in range(args.num_classes)}
     label2id = {label: idx for idx, label in id2label.items()}
 
-    model = build_convnext_model(args, id2label, label2id).to(device)
+    model = build_convnext_model(train_module, args, id2label, label2id).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
@@ -208,11 +260,6 @@ def compute_per_class_iou(
 
 
 def parse_args() -> argparse.Namespace:
-    default_ckpt = str(
-        PROJECT_ROOT
-        / "output/convnext_mask2former/20260321_184712"
-        / "goose_convnext_mask2former/best_miou.pt"
-    )
     default_colormap = str(PROJECT_ROOT / "common/goose_colormap.json")
     default_output = str(PROJECT_ROOT / "output/comparison_results_convnext")
 
@@ -220,13 +267,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default=default_ckpt,
+        required=True,
         help="Path to a ConvNeXt-based .pt checkpoint.",
     )
     parser.add_argument(
         "--data_path",
         type=str,
-        default="/home/datasets/goose-dataset",
+        required=True,
         help="GOOSE dataset root path.",
     )
     parser.add_argument(
@@ -274,6 +321,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Specific dataset indices to visualize.",
     )
+    parser.add_argument(
+        "--train_script_dir",
+        action="append",
+        default=[],
+        help="Additional directory to search for training scripts when loading "
+             "checkpoint model classes. Can be passed multiple times.",
+    )
     return parser.parse_args()
 
 
@@ -290,7 +344,9 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model, model_args = load_model_from_checkpoint(args.checkpoint, device)
+    model, model_args = load_model_from_checkpoint(
+        args.checkpoint, device, args.train_script_dir
+    )
 
     colormap = load_colormap(args.colormap)
     print(f"Colormap loaded: {len(colormap)} classes")
@@ -367,8 +423,6 @@ def main() -> None:
         print(f"\n{'=' * 50}")
         print(f"  mIoU: {miou:.4f}  ({miou * 100:.2f}%)")
         print(f"{'=' * 50}")
-
-        import csv
 
         csv_path = output_dir / "per_class_iou.csv"
         with open(csv_path, "w", newline="", encoding="utf-8") as fp:

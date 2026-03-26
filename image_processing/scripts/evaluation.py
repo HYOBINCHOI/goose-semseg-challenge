@@ -7,7 +7,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import super_gradients as sg
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import torch
 import tqdm
 from goosetools import GOOSE_Dataset
@@ -15,12 +19,9 @@ from goosetools.data import load_splits
 from goosetools.inference import run_inference
 from goosetools.utils import str2bool
 from matplotlib import pyplot as plt
-from super_gradients.common.object_names import Models
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
 TRAIN_SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 
 
@@ -173,14 +174,19 @@ def parse_args() -> argparse.Namespace:
         help="Path to goose_label_mapping.csv. "
              "If not set, {path}/goose_label_mapping.csv will be used.",
     )
+    parser.add_argument(
+        "--train_script_dir",
+        action="append",
+        default=[],
+        help="Additional directory to search for training scripts when loading "
+             "Mask2Former checkpoints. Can be passed multiple times.",
+    )
 
     return parser.parse_args()
 
 
 def strip_file_prefix(path: str) -> str:
-    if path.startswith("file://"):
-        return path[len("file://"):]
-    return path
+    return path.removeprefix("file://")
 
 
 def nanmean_tensor(x: torch.Tensor) -> torch.Tensor:
@@ -210,6 +216,13 @@ def resolve_label_mapping_csv(dataset_root: str, csv_path: str) -> str:
             "Please pass it explicitly with --label_mapping_csv"
         )
     return default_path
+
+
+def make_iou_tensor(tp: torch.Tensor, union: torch.Tensor) -> torch.Tensor:
+    ious = torch.full_like(union, float("nan"), dtype=torch.float64)
+    valid = union > 0
+    ious[valid] = tp[valid] / union[valid]
+    return ious
 
 
 def load_label_mapping(csv_path: str, n_classes: int):
@@ -333,35 +346,36 @@ def write_results_txt_and_json(
     miou_coarse,
     miou_composite,
 ):
-    # text
-    lines = []
-    lines.append("Competition-style Evaluation")
-    lines.append("=" * 60)
-    lines.append("Excluded fine classes: {}".format(EXCLUDED_FINE_CLASS_IDS))
-    lines.append("")
-    lines.append("mIoUfine      : {}".format(miou_fine.item()))
-    lines.append("mIoUcoarse    : {}".format(miou_coarse.item()))
-    lines.append("mIoUcomposite : {}".format(miou_composite.item()))
-    lines.append("")
-    lines.append("[Fine IoU per class]")
-    for idx, cls_id in enumerate(fine_class_ids):
-        lines.append(
+    output_dir = Path(output_path)
+    lines = [
+        "Competition-style Evaluation",
+        "=" * 60,
+        f"Excluded fine classes: {EXCLUDED_FINE_CLASS_IDS}",
+        "",
+        f"mIoUfine      : {miou_fine.item()}",
+        f"mIoUcoarse    : {miou_coarse.item()}",
+        f"mIoUcomposite : {miou_composite.item()}",
+        "",
+        "[Fine IoU per class]",
+        *[
             "{:>2d} ({:<20s}) : {}".format(
                 cls_id, class_names[cls_id], fine_ious[idx].item()
             )
-        )
+            for idx, cls_id in enumerate(fine_class_ids)
+        ],
+        "",
+        "[Coarse IoU per category]",
+        *[
+            "{:<12s} : {}".format(cat_name, coarse_ious[idx].item())
+            for idx, cat_name in enumerate(COARSE_CATEGORIES)
+        ],
+    ]
 
-    lines.append("")
-    lines.append("[Coarse IoU per category]")
-    for idx, cat_name in enumerate(COARSE_CATEGORIES):
-        lines.append("{:<12s} : {}".format(cat_name, coarse_ious[idx].item()))
-
-    with open(os.path.join(output_path, "results.txt"), "w", encoding="utf-8") as f:
+    with open(output_dir / "results.txt", "w", encoding="utf-8") as f:
         for line in lines:
             f.write(line + "\n")
             print(line)
 
-    # json
     result_json = {
         "config": config,
         "excluded_fine_class_ids": EXCLUDED_FINE_CLASS_IDS,
@@ -383,10 +397,10 @@ def write_results_txt_and_json(
         },
     }
 
-    with open(os.path.join(output_path, "results.json"), "w", encoding="utf-8") as f:
+    with open(output_dir / "results.json", "w", encoding="utf-8") as f:
         json.dump(result_json, f, indent=2, ensure_ascii=False)
 
-    with open(os.path.join(output_path, "config.json"), "w", encoding="utf-8") as f:
+    with open(output_dir / "config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
@@ -409,6 +423,23 @@ def visualize(img: torch.Tensor, gt: torch.Tensor, res: torch.Tensor):
     plt.show()
 
 
+def outputs_to_semantic_predictions(outputs, target_size) -> torch.Tensor:
+    class_logits = outputs.class_queries_logits[..., :-1]
+    mask_logits = outputs.masks_queries_logits
+
+    class_probs = torch.softmax(class_logits, dim=-1)
+    mask_probs = torch.sigmoid(mask_logits)
+    semantic_logits = torch.einsum("bqc,bqhw->bchw", class_probs, mask_probs)
+    if semantic_logits.shape[-2:] != target_size:
+        semantic_logits = torch.nn.functional.interpolate(
+            semantic_logits,
+            size=target_size,
+            mode="bilinear",
+            align_corners=False,
+        )
+    return semantic_logits.argmax(dim=1)
+
+
 def update_fine_confusion(conf_mat, gt, pred, n_classes):
     """
     conf_mat: [n_classes, n_classes]
@@ -418,11 +449,14 @@ def update_fine_confusion(conf_mat, gt, pred, n_classes):
     gt = gt.view(-1).long()
     pred = pred.view(-1).long()
 
-    valid = (gt >= 0) & (gt < n_classes) & (pred >= 0) & (pred < n_classes)
-
-    # ignore excluded GT classes
-    for cls_id in EXCLUDED_FINE_CLASS_IDS:
-        valid &= (gt != cls_id)
+    excluded = torch.tensor(EXCLUDED_FINE_CLASS_IDS, device=gt.device)
+    valid = (
+        (gt >= 0)
+        & (gt < n_classes)
+        & (pred >= 0)
+        & (pred < n_classes)
+        & ~torch.isin(gt, excluded)
+    )
 
     gt = gt[valid]
     pred = pred[valid]
@@ -479,16 +513,9 @@ def compute_fine_ious(conf_mat, n_classes):
     col_sum = conf_mat.sum(dim=0)
 
     fine_class_ids = [i for i in range(n_classes) if i not in EXCLUDED_FINE_CLASS_IDS]
-    fine_ious = []
-
-    for cls_id in fine_class_ids:
-        union = row_sum[cls_id] + col_sum[cls_id] - tp[cls_id]
-        if union > 0:
-            fine_ious.append(tp[cls_id] / union)
-        else:
-            fine_ious.append(torch.tensor(float("nan"), dtype=torch.float64))
-
-    fine_ious = torch.stack(fine_ious)
+    fine_indices = torch.tensor(fine_class_ids, dtype=torch.long)
+    union = row_sum[fine_indices] + col_sum[fine_indices] - tp[fine_indices]
+    fine_ious = make_iou_tensor(tp[fine_indices], union)
     miou_fine = nanmean_tensor(fine_ious)
 
     return fine_class_ids, fine_ious, miou_fine
@@ -504,15 +531,8 @@ def compute_coarse_ious(conf_mat):
     row_sum = conf_mat.sum(dim=1)
     col_sum = conf_mat[:, :len(COARSE_CATEGORIES)].sum(dim=0)
 
-    coarse_ious = []
-    for cat_id in range(len(COARSE_CATEGORIES)):
-        union = row_sum[cat_id] + col_sum[cat_id] - tp[cat_id]
-        if union > 0:
-            coarse_ious.append(tp[cat_id] / union)
-        else:
-            coarse_ious.append(torch.tensor(float("nan"), dtype=torch.float64))
-
-    coarse_ious = torch.stack(coarse_ious)
+    union = row_sum + col_sum - tp
+    coarse_ious = make_iou_tensor(tp, union)
     miou_coarse = nanmean_tensor(coarse_ious)
 
     return coarse_ious, miou_coarse
@@ -549,9 +569,9 @@ def infer_mask2former_script_name(checkpoint_args: dict) -> str:
     output_dir = str(checkpoint_args.get("output_dir", ""))
 
     if "convnext_mask2former_512_64_boosted" in run_name or "convnext_mask2former_512_64_boosted" in output_dir:
-        return "convnext_mask2former_train_512_64_boosted.py"
+        return "semantic_train_convnext.py"
     if "convnext_mask2former" in run_name or "convnext_mask2former" in output_dir:
-        return "convnext_mask2former_train_512_64.py"
+        return "semantic_train_convnext.py"
     if "dinov3_mask2former_regularized" in run_name or "dinov3_mask2former_regularized" in output_dir:
         return "dinov3_mask2former_train_regularized.py"
     if "dinov3" in run_name or "dinov3" in output_dir:
@@ -562,22 +582,42 @@ def infer_mask2former_script_name(checkpoint_args: dict) -> str:
     )
 
 
-def build_mask2former_model_from_checkpoint(ckpt_path: str, device: torch.device):
+def resolve_train_script_path(script_name: str, extra_dirs) -> Path:
+    candidate_dirs = [TRAIN_SCRIPTS_DIR, *(Path(directory) for directory in extra_dirs)]
+    for directory in candidate_dirs:
+        script_path = directory / script_name
+        if script_path.exists():
+            return script_path
+    raise FileNotFoundError(
+        f"Could not find training script {script_name} in: "
+        + ", ".join(str(directory) for directory in candidate_dirs)
+    )
+
+
+def build_mask2former_model_from_checkpoint(
+    ckpt_path: str, device: torch.device, train_script_dirs
+):
     payload = load_mask2former_checkpoint_payload(ckpt_path)
     checkpoint_args = dict(payload.get("args", {}))
     checkpoint_args["device"] = str(device)
 
     script_name = infer_mask2former_script_name(checkpoint_args)
-    script_path = TRAIN_SCRIPTS_DIR / script_name
+    script_path = resolve_train_script_path(script_name, train_script_dirs)
     module = load_python_module(f"eval_{script_name.replace('.', '_')}", script_path)
 
-    if hasattr(module, "ConvNeXtMask2FormerBoostedModel"):
-        model_cls = module.ConvNeXtMask2FormerBoostedModel
-    elif hasattr(module, "ConvNeXtMask2FormerModel"):
-        model_cls = module.ConvNeXtMask2FormerModel
-    elif hasattr(module, "DinoV3Mask2FormerModel"):
-        model_cls = module.DinoV3Mask2FormerModel
-    else:
+    model_cls = next(
+        (
+            getattr(module, name)
+            for name in (
+                "ConvNeXtMask2FormerBoostedModel",
+                "ConvNeXtMask2FormerModel",
+                "DinoV3Mask2FormerModel",
+            )
+            if hasattr(module, name)
+        ),
+        None,
+    )
+    if model_cls is None:
         raise ValueError(f"Could not find a compatible model class in {script_path}")
 
     args_namespace = argparse.Namespace(**checkpoint_args)
@@ -593,14 +633,39 @@ def build_mask2former_model_from_checkpoint(ckpt_path: str, device: torch.device
 
 
 def run_mask2former_inference(img: torch.Tensor, model) -> torch.Tensor:
-    mask2former_train = load_python_module(
-        "eval_mask2former_train", TRAIN_SCRIPTS_DIR / "mask2former_train.py"
-    )
     outputs = model(pixel_values=img.unsqueeze(0))
-    prediction = mask2former_train.outputs_to_semantic_predictions(
-        outputs, target_size=img.shape[-2:]
-    )
+    prediction = outputs_to_semantic_predictions(outputs, target_size=img.shape[-2:])
     return prediction.squeeze(0)
+
+
+def load_model(
+    ckpt: str, device: torch.device, n_classes: int, train_script_dirs
+):
+    if is_mask2former_checkpoint(ckpt):
+        model, payload = build_mask2former_model_from_checkpoint(
+            ckpt, device, train_script_dirs
+        )
+        checkpoint_num_classes = int(payload["args"].get("num_classes", n_classes))
+        return model, payload, checkpoint_num_classes, True
+
+    import super_gradients as sg
+    from super_gradients.common.object_names import Models
+
+    model = sg.training.models.get(
+        model_name=Models.DDRNET_39,
+        num_classes=n_classes,
+        pretrained_weights=None,
+        checkpoint_path=ckpt,
+    )
+    model = model.to(device)
+    model.eval()
+    return model, None, n_classes, False
+
+
+def infer_mask(img: torch.Tensor, model, use_mask2former_checkpoint: bool) -> torch.Tensor:
+    if use_mask2former_checkpoint:
+        return run_mask2former_inference(img, model=model)
+    return run_inference(img, model=model, threshold=0.5)
 
 
 if __name__ == "__main__":
@@ -625,25 +690,15 @@ if __name__ == "__main__":
 
     # Load model
     ckpt = strip_file_prefix(opt.ckpt)
-    use_mask2former_checkpoint = is_mask2former_checkpoint(ckpt)
-    if use_mask2former_checkpoint:
-        model, payload = build_mask2former_model_from_checkpoint(ckpt, device)
-        checkpoint_num_classes = int(payload["args"].get("num_classes", n_classes))
-        if checkpoint_num_classes != n_classes:
-            print(
-                "[WARNING] Overriding --n_classes={} with checkpoint num_classes={}."
-                .format(n_classes, checkpoint_num_classes)
-            )
-            n_classes = checkpoint_num_classes
-    else:
-        model = sg.training.models.get(
-            model_name=Models.DDRNET_39,
-            num_classes=n_classes,
-            pretrained_weights=None,
-            checkpoint_path=ckpt,
+    model, payload, checkpoint_num_classes, use_mask2former_checkpoint = load_model(
+        ckpt, device, n_classes, opt.train_script_dir
+    )
+    if checkpoint_num_classes != n_classes:
+        print(
+            "[WARNING] Overriding --n_classes={} with checkpoint num_classes={}."
+            .format(n_classes, checkpoint_num_classes)
         )
-        model = model.to(device)
-        model.eval()
+        n_classes = checkpoint_num_classes
 
     # Load data
     validation_dict = load_splits(opt.path, [opt.test_split_name])[0]
@@ -671,10 +726,7 @@ if __name__ == "__main__":
                 img_for_vis = img.clone()
 
                 img = img.to(device)
-                if use_mask2former_checkpoint:
-                    mask = run_mask2former_inference(img, model=model)
-                else:
-                    mask = run_inference(img, model=model, threshold=0.5)
+                mask = infer_mask(img, model, use_mask2former_checkpoint)
 
                 if not opt.use_processed_labels:
                     sem_map = validation_dataset.get_original_label(i, True)

@@ -108,9 +108,7 @@ DEFAULT_CLASSNAME_TO_COARSE = {
 }
 
 
-def fill_coarse_mapping_from_class_names(
-    class_names, class_to_coarse, coarse_name_to_id
-) -> int:
+def fill_coarse_mapping_from_class_names(class_names, class_to_coarse, coarse_name_to_id) -> int:
     applied = 0
     for class_id, class_name in enumerate(class_names):
         if class_to_coarse[class_id] != INVALID_COARSE_ID:
@@ -143,8 +141,8 @@ def parse_args() -> argparse.Namespace:
         help="Evaluate with processed labels (cropped/resized). "
              "For competition-like evaluation, keep this False.",
     )
-    parser.add_argument("--resize_width", "-rw", type=int, default=768)
-    parser.add_argument("--resize_height", "-rh", type=int, default=768)
+    parser.add_argument("--resize_width", "-rw", type=int, default=512)
+    parser.add_argument("--resize_height", "-rh", type=int, default=512)
 
     # Results
     parser.add_argument(

@@ -47,7 +47,7 @@ To evaluate the performance of a trained checkpoint the script `evaluation.py` c
 
 **Example usage of `evaluation.py`**
 ```bash
-python evaluation.py /path/to/goosedataset /path/to/ckpt -rw 512 -rh 512 --test_split_name val
+python evaluation.py /path/to/goose-dataset /path/to/checkpoint.pt  --test_split_name val --train_script_dir /path/to/training/scripts
 ```
 
 The results will be printed to the console and saved as a file to the output directory

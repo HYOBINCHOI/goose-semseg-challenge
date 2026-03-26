@@ -58,7 +58,7 @@ To run the images through the models and save the inferred results use the `comp
 
 **Example usage of `compare_gt.py`**
 ```bash
-python compare_gt.py --data_path /path/to/goose-dataset --checkpoint /path/to/checkpoint.pt --split val --num_samples 10 --output_dir /path/to/output_dir
+python compare_gt.py --checkpoint /path/to/checkpoint.pt --data_path /path/to/goose-dataset --train_script_dir /path/to/training/scripts --colormap /path/to/goose_colormap.json --split val --num_samples 10
 ```
 
 The results will be saved to the output directory

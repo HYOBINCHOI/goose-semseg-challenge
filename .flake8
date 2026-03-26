@@ -1,0 +1,5 @@
+[flake8]
+max-line-length = 120
+extend-ignore = E251
+per-file-ignores =
+    image_processing/scripts/evaluation.py:E402

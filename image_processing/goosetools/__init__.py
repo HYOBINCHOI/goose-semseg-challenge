@@ -1,1 +1,1 @@
-from .data import GOOSE_Dataset
+from .data import GOOSE_Dataset  # noqa: F401

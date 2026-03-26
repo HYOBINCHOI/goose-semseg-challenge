@@ -10,7 +10,6 @@ import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-
 SENSOR_SUFFIXES: Tuple[str, ...] = (
     "_camera_left",
     "_windshield_vis",
@@ -28,8 +27,8 @@ DEFAULT_LIST_FILES: Tuple[str, ...] = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build a Codabench submission zip from GOOSE prediction PNGs."
-    )
+        description=
+        "Build a Codabench submission zip from GOOSE prediction PNGs.")
     parser.add_argument(
         "--predictions_dir",
         type=Path,
@@ -40,7 +39,8 @@ def parse_args() -> argparse.Namespace:
         "--scene_lists_dir",
         type=Path,
         required=True,
-        help="Directory that contains the official txt files listing target scenes.",
+        help=
+        "Directory that contains the official txt files listing target scenes.",
     )
     parser.add_argument(
         "--output_dir",
@@ -78,18 +78,19 @@ def parse_args() -> argparse.Namespace:
 def strip_sensor_suffix(stem: str) -> str:
     for suffix in SENSOR_SUFFIXES:
         if stem.endswith(suffix):
-            return stem[: -len(suffix)]
+            return stem[:-len(suffix)]
     return stem
 
 
 def strip_labelids_suffix(stem: str) -> str:
     suffix = "_labelids"
     if stem.endswith(suffix):
-        return stem[: -len(suffix)]
+        return stem[:-len(suffix)]
     return stem
 
 
-def load_target_names(scene_lists_dir: Path, list_files: Sequence[str]) -> List[str]:
+def load_target_names(scene_lists_dir: Path,
+                      list_files: Sequence[str]) -> List[str]:
     target_names: List[str] = []
     for filename in list_files:
         path = scene_lists_dir / filename
@@ -103,19 +104,19 @@ def load_target_names(scene_lists_dir: Path, list_files: Sequence[str]) -> List[
     return list(dict.fromkeys(target_names))
 
 
-def collect_prediction_files(
-    predictions_dir: Path, ignored_dir_name: str
-) -> List[Path]:
+def collect_prediction_files(predictions_dir: Path,
+                             ignored_dir_name: str) -> List[Path]:
     if not predictions_dir.exists():
-        raise FileNotFoundError(f"Predictions directory does not exist: {predictions_dir}")
+        raise FileNotFoundError(
+            f"Predictions directory does not exist: {predictions_dir}")
 
     prediction_files = [
-        path
-        for path in predictions_dir.rglob("*.png")
+        path for path in predictions_dir.rglob("*.png")
         if ignored_dir_name not in path.parts
     ]
     if not prediction_files:
-        raise FileNotFoundError(f"No prediction PNGs found under: {predictions_dir}")
+        raise FileNotFoundError(
+            f"No prediction PNGs found under: {predictions_dir}")
     return prediction_files
 
 
@@ -151,7 +152,8 @@ def resolve_prediction_path(
     try:
         prefix, _frame_idx, timestamp = target_base.rsplit("_", 2)
     except ValueError as exc:
-        raise ValueError(f"Could not parse target filename: {target_name}") from exc
+        raise ValueError(
+            f"Could not parse target filename: {target_name}") from exc
 
     source = prefix_timestamp_map.get((prefix, timestamp))
     if source is None:
@@ -191,7 +193,8 @@ def copy_submission_files(
 
     if missing_targets:
         preview = ", ".join(missing_targets[:10])
-        extra = "" if len(missing_targets) <= 10 else f" ... (+{len(missing_targets) - 10})"
+        extra = "" if len(
+            missing_targets) <= 10 else f" ... (+{len(missing_targets) - 10})"
         raise FileNotFoundError(
             f"Missing predictions for {len(missing_targets)} targets: {preview}{extra}"
         )
@@ -199,24 +202,29 @@ def copy_submission_files(
     return created_files
 
 
-def write_submission_zip(output_zip: Path, created_files: Sequence[Path]) -> None:
+def write_submission_zip(output_zip: Path,
+                         created_files: Sequence[Path]) -> None:
     if output_zip.exists():
         output_zip.unlink()
     output_zip.parent.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(output_zip, "w",
+                         compression=zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(created_files):
             zf.write(path, arcname=path.name)
 
 
-def validate_submission_zip(output_zip: Path, expected_count: Optional[int]) -> None:
+def validate_submission_zip(output_zip: Path,
+                            expected_count: Optional[int]) -> None:
     with zipfile.ZipFile(output_zip) as zf:
         names = [name for name in zf.namelist() if not name.endswith("/")]
         png_names = [name for name in names if name.lower().endswith(".png")]
         has_subdirs = any("/" in name for name in names)
 
     if has_subdirs:
-        raise ValueError("Submission zip contains subdirectories; expected root-level PNGs only.")
+        raise ValueError(
+            "Submission zip contains subdirectories; expected root-level PNGs only."
+        )
     if len(names) != len(png_names):
         raise ValueError("Submission zip contains non-PNG files.")
     if expected_count is not None and len(png_names) != expected_count:
@@ -233,7 +241,8 @@ def main() -> None:
         predictions_dir=args.predictions_dir,
         ignored_dir_name=args.sample_check_dir_name,
     )
-    exact_base_map, prefix_timestamp_map = build_prediction_index(prediction_files)
+    exact_base_map, prefix_timestamp_map = build_prediction_index(
+        prediction_files)
 
     prepare_output_dir(args.output_dir)
     created_files = copy_submission_files(

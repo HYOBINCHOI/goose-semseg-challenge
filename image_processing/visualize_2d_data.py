@@ -2,14 +2,14 @@
 Tool to visualize some frames of the GOOSE(-EX) 2D Dataset
 """
 
-from goosetools import GOOSE_Dataset
-
 import argparse as ap
-from typing import List, Optional
 from random import randint
+from typing import List, Optional
+
+import numpy as np
+from goosetools import GOOSE_Dataset
 from matplotlib import pyplot as plt
 from PIL import Image
-import numpy as np
 
 
 def parse_args() -> ap.Namespace:
@@ -22,7 +22,8 @@ def parse_args() -> ap.Namespace:
         "--n_elements",
         type=int,
         default=5,
-        help="Number of frames to display. If a list of indices is given, this is ignored. Otherwise n_elements random frames are selected",
+        help="Number of frames to display. If a list of indices is given, "
+        "this is ignored. Otherwise n_elements random frames are selected",
     )
 
     parser.add_argument(
@@ -92,9 +93,12 @@ def show_images(
 if __name__ == "__main__":
     opts = parse_args()
 
-    dataset = GOOSE_Dataset.from_paths(
-        opts.img_path, opts.lbl_path, crop=False, resize_size=None, with_instances=True
-    )
-    show_images(
-        dataset, n_elements=opts.n_elements, indices=opts.indices, overlay=opts.overlay
-    )
+    dataset = GOOSE_Dataset.from_paths(opts.img_path,
+                                       opts.lbl_path,
+                                       crop=False,
+                                       resize_size=None,
+                                       with_instances=True)
+    show_images(dataset,
+                n_elements=opts.n_elements,
+                indices=opts.indices,
+                overlay=opts.overlay)

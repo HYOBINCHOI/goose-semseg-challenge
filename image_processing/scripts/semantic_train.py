@@ -25,7 +25,9 @@ from tqdm.auto import tqdm
 DEFAULT_GOOSE_TOOLS_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
-def seed_everything(seed: int) -> None: # Seed all RNGs so data shuffling and training are reproducible
+def seed_everything(
+    seed: int
+) -> None:  # Seed all RNGs so data shuffling and training are reproducible
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -40,10 +42,13 @@ def resolve_device(device_name: str) -> torch.device:
     return torch.device(device_name)
 
 
-def load_goose_dataset_class(goose_tools_root: str): # Load the GOOSE_Dataset class from the goosetools package
+def load_goose_dataset_class(
+    goose_tools_root: str
+):  # Load the GOOSE_Dataset class from the goosetools package
     goose_root = Path(goose_tools_root).resolve()
     if not goose_root.exists():
-        raise FileNotFoundError(f"goose_tools_root does not exist: {goose_root}")
+        raise FileNotFoundError(
+            f"goose_tools_root does not exist: {goose_root}")
 
     if str(goose_root) not in sys.path:
         sys.path.insert(0, str(goose_root))
@@ -57,29 +62,34 @@ def resolve_goose_data_root(data_path: str) -> Path:
     base_path = Path(data_path).expanduser().resolve()
 
     for root in (base_path, base_path / "goose-dataset"):
-        if (root / "images" / "train").is_dir() and (root / "labels" / "train").is_dir():
+        if (root / "images" / "train").is_dir() and (root / "labels" /
+                                                     "train").is_dir():
             return root
 
     raise FileNotFoundError(
-        f"Could not find a valid GOOSE dataset root under {base_path}"
-    )
+        f"Could not find a valid GOOSE dataset root under {base_path}")
 
 
-def default_output_dir() -> str:  # The default output directory needs to be updated
+def default_output_dir(
+) -> str:  # The default output directory needs to be updated
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return (
-        "/home/mipstu/jiPark/challenge/goose_dataset/output/"
-        f"{timestamp}"
-    )
+    return ("/home/mipstu/jiPark/challenge/goose_dataset/output/"
+            f"{timestamp}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser("ConvNeXt + Mask2Former Trainer (boosted)")
+    parser = argparse.ArgumentParser(
+        "ConvNeXt + Mask2Former Trainer (boosted)")
 
-    parser.add_argument("data_path", type=str, help="Path to goose dataset root")
-    parser.add_argument( "--goose_tools_root", type=str, default=DEFAULT_GOOSE_TOOLS_ROOT, help="Directory that contains the goosetools package.")
+    parser.add_argument("data_path",
+                        type=str,
+                        help="Path to goose dataset root")
+    parser.add_argument("--goose_tools_root",
+                        type=str,
+                        default=DEFAULT_GOOSE_TOOLS_ROOT,
+                        help="Directory that contains the goosetools package.")
     parser.add_argument("--output_dir", type=str, default=default_output_dir())
-    parser.add_argument( "--run_name", type=str, default="convnext_mask2former")
+    parser.add_argument("--run_name", type=str, default="convnext_mask2former")
 
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -111,7 +121,8 @@ def parse_args() -> argparse.Namespace:
         "--mask2former_pretrained_model_name_or_path",
         type=str,
         default="facebook/mask2former-swin-large-ade-semantic",
-        help="Pretrained Mask2Former checkpoint for decoder/heads initialization.",
+        help=
+        "Pretrained Mask2Former checkpoint for decoder/heads initialization.",
     )
     parser.add_argument(
         "--freeze_encoder",
@@ -128,10 +139,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--freeze_mask2former_decoder",
         action="store_true",
-        help="Freeze pretrained Mask2Former transformer decoder and prediction heads.",
+        help=
+        "Freeze pretrained Mask2Former transformer decoder and prediction heads.",
     )
 
-    parser.add_argument( # Select which ConvNeXt stages to use as multi-scale features.
+    parser.add_argument(  # Select which ConvNeXt stages to use as multi-scale features.
         "--feature_indices",
         type=int,
         nargs="+",
@@ -142,10 +154,11 @@ def parse_args() -> argparse.Namespace:
         "--adapter_hidden_dim",
         type=int,
         default=256,
-        help="Intermediate channel size in the ConvNeXt-to-Mask2Former adapter.",
+        help=
+        "Intermediate channel size in the ConvNeXt-to-Mask2Former adapter.",
     )
-    
-    ###Optional###
+
+    # Optional
     parser.add_argument(
         "--adapter_dropout",
         type=float,
@@ -162,7 +175,8 @@ def parse_args() -> argparse.Namespace:
         "--mask_feature_fusion_levels",
         type=int,
         default=2,
-        help="Number of highest-resolution levels fused for mask feature generation.",
+        help=
+        "Number of highest-resolution levels fused for mask feature generation.",
     )
 
     parser.add_argument(
@@ -185,16 +199,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-
 ############################################################
 #              Segmentation Metrics And Logging            #
 ############################################################
-def semantic_map_to_targets(semantic_map: torch.Tensor, ignore_index: int) -> Tuple[torch.Tensor, torch.Tensor]:
+def semantic_map_to_targets(
+        semantic_map: torch.Tensor,
+        ignore_index: int) -> Tuple[torch.Tensor, torch.Tensor]:
     class_ids = torch.unique(semantic_map)
     valid_class_ids = class_ids[class_ids != ignore_index]
 
     if valid_class_ids.numel() == 0:
-        empty_class_ids = torch.zeros((0,), dtype=torch.long)
+        empty_class_ids = torch.zeros((0, ), dtype=torch.long)
         empty_class_masks = torch.zeros(
             (0, semantic_map.shape[0], semantic_map.shape[1]),
             dtype=torch.float32,
@@ -208,7 +223,9 @@ def semantic_map_to_targets(semantic_map: torch.Tensor, ignore_index: int) -> Tu
     return valid_class_ids.to(torch.long), torch.stack(class_masks, dim=0)
 
 
-def outputs_to_semantic_predictions(outputs, target_size: Tuple[int, int]) -> torch.Tensor: # Convert the model's query-based outputs into the final semantic segmentation map.
+def outputs_to_semantic_predictions(
+    outputs, target_size: Tuple[int, int]
+) -> torch.Tensor:  # Convert the model's query-based outputs into the final semantic segmentation map.
     class_logits = outputs.class_queries_logits[..., :-1]
     mask_logits = outputs.masks_queries_logits
 
@@ -232,7 +249,7 @@ def update_confusion_matrix(
     num_classes: int,
     ignore_index: int,
 ) -> None:
-    
+
     valid_mask = targets != ignore_index
     if not torch.any(valid_mask):
         return
@@ -242,9 +259,8 @@ def update_confusion_matrix(
 
     encoded = filtered_targets * num_classes + filtered_predictions
     bins = torch.bincount(encoded, minlength=num_classes * num_classes)
-    confusion_matrix += bins.reshape(num_classes, num_classes).to(
-        confusion_matrix.device
-    )
+    confusion_matrix += bins.reshape(num_classes,
+                                     num_classes).to(confusion_matrix.device)
 
 
 def compute_mean_iou(confusion_matrix: torch.Tensor) -> float:
@@ -271,7 +287,7 @@ def save_checkpoint(
     best_val_miou: float,
     args: argparse.Namespace,
 ) -> None:
-    
+
     payload = {
         "epoch": epoch,
         "best_val_loss": best_val_loss,
@@ -284,31 +300,30 @@ def save_checkpoint(
     torch.save(payload, save_path)
 
 
-def metric_checkpoint_path(run_dir: Path, prefix: str, epoch: int, score: float, higher_is_better: bool) -> Path:
+def metric_checkpoint_path(run_dir: Path, prefix: str, epoch: int,
+                           score: float, higher_is_better: bool) -> Path:
     metric_name = "miou" if higher_is_better else "loss"
     return run_dir / f"{prefix}_epoch_{epoch + 1:03d}_{metric_name}_{score:.4f}.pt"
 
 
-def ensure_epoch_log_file(log_path: Path) -> None: # Create the log CSV file.
+def ensure_epoch_log_file(log_path: Path) -> None:  # Create the log CSV file.
     if log_path.exists():
         return
 
     with open(log_path, "w", encoding="utf-8", newline="") as fp:
         writer = csv.writer(fp)
-        writer.writerow(
-            [
-                "epoch",
-                "train_loss",
-                "train_miou",
-                "val_loss",
-                "val_miou",
-                "best_val_loss",
-                "best_val_miou",
-            ]
-        )
+        writer.writerow([
+            "epoch",
+            "train_loss",
+            "train_miou",
+            "val_loss",
+            "val_miou",
+            "best_val_loss",
+            "best_val_miou",
+        ])
 
 
-def append_epoch_log( # Append one row of epoch results to the CSV log file.
+def append_epoch_log(  # Append one row of epoch results to the CSV log file.
     log_path: Path,
     epoch: int,
     train_loss: float,
@@ -318,23 +333,23 @@ def append_epoch_log( # Append one row of epoch results to the CSV log file.
     best_val_loss: float,
     best_val_miou: float,
 ) -> None:
-    
+
     with open(log_path, "a", encoding="utf-8", newline="") as fp:
         writer = csv.writer(fp)
-        writer.writerow(
-            [
-                epoch + 1,
-                f"{train_loss:.6f}",
-                f"{train_miou:.6f}",
-                f"{val_loss:.6f}",
-                f"{val_miou:.6f}",
-                f"{best_val_loss:.6f}",
-                f"{best_val_miou:.6f}",
-            ]
-        )
+        writer.writerow([
+            epoch + 1,
+            f"{train_loss:.6f}",
+            f"{train_miou:.6f}",
+            f"{val_loss:.6f}",
+            f"{val_miou:.6f}",
+            f"{best_val_loss:.6f}",
+            f"{best_val_miou:.6f}",
+        ])
 
 
-def save_training_curves(log_path: Path, output_path: Path) -> None: # Save the loss and mIoU training curves as an image.
+def save_training_curves(
+    log_path: Path, output_path: Path
+) -> None:  # Save the loss and mIoU training curves as an image.
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -382,23 +397,24 @@ def save_training_curves(log_path: Path, output_path: Path) -> None: # Save the 
     plt.close(fig)
 
 
-
 ############################################################
 #            Data Loading And Batch Utilities              #
 ############################################################
 class GooseMask2FormerCollator:
+
     def __init__(self, ignore_index: int):
         self.ignore_index = ignore_index
 
     def __call__(
-        self, batch: Sequence[Tuple[torch.Tensor, torch.Tensor]]
-    ) -> Dict[str, object]:
+        self, batch: Sequence[Tuple[torch.Tensor,
+                                    torch.Tensor]]) -> Dict[str, object]:
         images, semantic_maps = zip(*batch)
         class_labels: List[torch.Tensor] = []
         mask_labels: List[torch.Tensor] = []
 
         for semantic_map in semantic_maps:
-            classes, masks = semantic_map_to_targets(semantic_map, self.ignore_index)
+            classes, masks = semantic_map_to_targets(semantic_map,
+                                                     self.ignore_index)
             class_labels.append(classes)
             mask_labels.append(masks)
 
@@ -410,9 +426,8 @@ class GooseMask2FormerCollator:
         }
 
 
-def move_batch_to_device(
-    batch: Dict[str, object], device: torch.device
-) -> Dict[str, object]:
+def move_batch_to_device(batch: Dict[str, object],
+                         device: torch.device) -> Dict[str, object]:
     return {
         "pixel_values": batch["pixel_values"].to(device, non_blocking=True),
         "semantic_maps": batch["semantic_maps"].to(device, non_blocking=True),
@@ -421,12 +436,13 @@ def move_batch_to_device(
     }
 
 
-
 ############################################################
 #                   Training Utilities                     #
 ############################################################
 class DINOInputNormalizer(nn.Module):
-    def __init__(self, mean: Sequence[float], std: Sequence[float], enabled: bool):
+
+    def __init__(self, mean: Sequence[float], std: Sequence[float],
+                 enabled: bool):
         super().__init__()
         self.enabled = enabled
         mean_tensor = torch.tensor(mean, dtype=torch.float32).view(1, 3, 1, 1)
@@ -456,21 +472,17 @@ def build_optimizer(args: argparse.Namespace, model: nn.Module) -> AdamW:
 
     parameter_groups = []
     if other_parameters:
-        parameter_groups.append(
-            {
-                "params": other_parameters,
-                "lr": args.lr,
-                "weight_decay": args.weight_decay,
-            }
-        )
+        parameter_groups.append({
+            "params": other_parameters,
+            "lr": args.lr,
+            "weight_decay": args.weight_decay,
+        })
     if encoder_parameters:
-        parameter_groups.append(
-            {
-                "params": encoder_parameters,
-                "lr": args.encoder_lr,
-                "weight_decay": args.weight_decay,
-            }
-        )
+        parameter_groups.append({
+            "params": encoder_parameters,
+            "lr": args.encoder_lr,
+            "weight_decay": args.weight_decay,
+        })
 
     return AdamW(parameter_groups)
 
@@ -493,14 +505,15 @@ def run_epoch(
     model.train(is_train)
 
     total_loss = 0.0
-    confusion_matrix = torch.zeros(
-        (num_classes, num_classes), dtype=torch.int64, device=device
-    )
+    confusion_matrix = torch.zeros((num_classes, num_classes),
+                                   dtype=torch.int64,
+                                   device=device)
 
     progress_bar = tqdm(
         loader,
         total=len(loader),
-        desc=f"Epoch {epoch_index + 1}/{total_epochs} {'train' if is_train else 'val'}",
+        desc=
+        f"Epoch {epoch_index + 1}/{total_epochs} {'train' if is_train else 'val'}",
         dynamic_ncols=True,
         leave=False,
         position=1,
@@ -511,8 +524,8 @@ def run_epoch(
 
         with torch.set_grad_enabled(is_train):
             with torch.amp.autocast(
-                device_type=device.type,
-                enabled=use_amp and device.type == "cuda",
+                    device_type=device.type,
+                    enabled=use_amp and device.type == "cuda",
             ):
                 outputs = model(
                     pixel_values=batch["pixel_values"],
@@ -532,8 +545,7 @@ def run_epoch(
         total_loss += float(loss.item())
 
         predictions = outputs_to_semantic_predictions(
-            outputs, target_size=batch["semantic_maps"].shape[-2:]
-        )
+            outputs, target_size=batch["semantic_maps"].shape[-2:])
         update_confusion_matrix(
             confusion_matrix=confusion_matrix,
             predictions=predictions,
@@ -580,20 +592,22 @@ def resume_if_needed(
     return start_epoch, best_val_loss, best_val_miou
 
 
-
 ############################################################
 #                    Model Components                      #
 ############################################################
-class AdapterProjectionBlock(nn.Module): # Projects each ConvNeXt feature map into the feature space expected by Mask2Former
-    def __init__( 
-        self, 
+class AdapterProjectionBlock(
+        nn.Module
+):  # Projects each ConvNeXt feature map into the feature space expected by Mask2Former
+
+    def __init__(
+        self,
         in_channels: int,
         hidden_channels: int,
         out_channels: int,
         dropout: float,
     ):
         super().__init__()
-        self.residual = nn.Conv2d(in_channels, out_channels, kernel_size=1) 
+        self.residual = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         self.block = nn.Sequential(
             nn.Conv2d(in_channels, hidden_channels, kernel_size=1),
             nn.GroupNorm(32, hidden_channels),
@@ -608,7 +622,10 @@ class AdapterProjectionBlock(nn.Module): # Projects each ConvNeXt feature map in
         return self.block(x) + self.residual(x)
 
 
-class MaskFeatureFusionHead(nn.Module): # Fuses multi-scale features into a high-resolution mask feature representation
+class MaskFeatureFusionHead(
+        nn.Module
+):  # Fuses multi-scale features into a high-resolution mask feature representation
+
     def __init__(
         self,
         feature_dim: int,
@@ -621,21 +638,29 @@ class MaskFeatureFusionHead(nn.Module): # Fuses multi-scale features into a high
         self.fusion_levels = fusion_levels
         in_channels = feature_dim * fusion_levels
         self.fusion = nn.Sequential(
-            nn.Conv2d(in_channels, adapter_hidden_dim, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels,
+                      adapter_hidden_dim,
+                      kernel_size=3,
+                      padding=1),
             nn.GroupNorm(32, adapter_hidden_dim),
             nn.GELU(),
             nn.Dropout2d(dropout),
-            nn.Conv2d(adapter_hidden_dim, adapter_hidden_dim, kernel_size=3, padding=1),
+            nn.Conv2d(adapter_hidden_dim,
+                      adapter_hidden_dim,
+                      kernel_size=3,
+                      padding=1),
             nn.GroupNorm(32, adapter_hidden_dim),
             nn.GELU(),
             nn.Dropout2d(dropout),
             nn.Conv2d(adapter_hidden_dim, mask_feature_dim, kernel_size=1),
         )
 
-    def forward(self, multi_scale_features: Sequence[torch.Tensor]) -> torch.Tensor:
-        levels = list(multi_scale_features[: self.fusion_levels])
+    def forward(self,
+                multi_scale_features: Sequence[torch.Tensor]) -> torch.Tensor:
+        levels = list(multi_scale_features[:self.fusion_levels])
         if not levels:
-            raise ValueError("Expected at least one feature level for mask fusion.")
+            raise ValueError(
+                "Expected at least one feature level for mask fusion.")
 
         base_size = levels[0].shape[-2:]
         resized_levels = [levels[0]]
@@ -651,7 +676,10 @@ class MaskFeatureFusionHead(nn.Module): # Fuses multi-scale features into a high
         return self.fusion(torch.cat(resized_levels, dim=1))
 
 
-class ConvNeXtPixelLevelModuleBoosted(nn.Module): # Replaces Mask2Former's pixel-level module with a ConvNeXt-based multi-scale feature extractor
+class ConvNeXtPixelLevelModuleBoosted(
+        nn.Module
+):  # Replaces Mask2Former's pixel-level module with a ConvNeXt-based multi-scale feature extractor
+
     def __init__(
         self,
         encoder: nn.Module,
@@ -671,56 +699,49 @@ class ConvNeXtPixelLevelModuleBoosted(nn.Module): # Replaces Mask2Former's pixel
         self.feature_indices = list(feature_indices)
         self.encoder_hidden_sizes = list(encoder_hidden_sizes)
 
-        self.input_projections = nn.ModuleList(
-            [
-                AdapterProjectionBlock(
-                    in_channels=stage_hidden_size,
-                    hidden_channels=adapter_hidden_dim,
-                    out_channels=feature_dim,
-                    dropout=adapter_dropout,
-                )
-                for stage_hidden_size in encoder_hidden_sizes
-            ]
-        )
+        self.input_projections = nn.ModuleList([
+            AdapterProjectionBlock(
+                in_channels=stage_hidden_size,
+                hidden_channels=adapter_hidden_dim,
+                out_channels=feature_dim,
+                dropout=adapter_dropout,
+            ) for stage_hidden_size in encoder_hidden_sizes
+        ])
         self.level_scales = nn.Parameter(torch.ones(len(encoder_hidden_sizes)))
         self.mask_fusion = MaskFeatureFusionHead(
             feature_dim=feature_dim,
             adapter_hidden_dim=adapter_hidden_dim,
             mask_feature_dim=mask_feature_dim,
-            fusion_levels=min(mask_feature_fusion_levels, len(encoder_hidden_sizes)),
+            fusion_levels=min(mask_feature_fusion_levels,
+                              len(encoder_hidden_sizes)),
             dropout=fusion_dropout,
         )
 
-    def _select_feature_maps( 
-        self, feature_maps: Sequence[torch.Tensor]
-    ) -> List[torch.Tensor]:
+    def _select_feature_maps(
+            self, feature_maps: Sequence[torch.Tensor]) -> List[torch.Tensor]:
 
         if len(feature_maps) == len(self.feature_indices):
             for feature_map in feature_maps:
                 if feature_map.ndim != 4:
                     raise ValueError(
                         "Expected each ConvNeXt feature map to be 4D, "
-                        f"but got shape {tuple(feature_map.shape)}."
-                    )
+                        f"but got shape {tuple(feature_map.shape)}.")
             return list(feature_maps)
 
         selected = []
         for index in self.feature_indices:
             if index >= len(feature_maps) or index < -len(feature_maps):
-                raise IndexError(
-                    f"feature index {index} is out of range for "
-                    f"{len(feature_maps)} ConvNeXt feature maps"
-                )
+                raise IndexError(f"feature index {index} is out of range for "
+                                 f"{len(feature_maps)} ConvNeXt feature maps")
             feature_map = feature_maps[index]
             if feature_map.ndim != 4:
                 raise ValueError(
                     f"Expected ConvNeXt feature map at index {index} to be 4D, "
-                    f"but got shape {tuple(feature_map.shape)}."
-                )
+                    f"but got shape {tuple(feature_map.shape)}.")
             selected.append(feature_map)
         return selected
 
-    def _extract_feature_maps(self, encoder_outputs) -> Sequence[torch.Tensor]: 
+    def _extract_feature_maps(self, encoder_outputs) -> Sequence[torch.Tensor]:
         feature_maps = getattr(encoder_outputs, "feature_maps", None)
         if feature_maps is not None:
             return feature_maps
@@ -733,37 +754,34 @@ class ConvNeXtPixelLevelModuleBoosted(nn.Module): # Replaces Mask2Former's pixel
 
         valid_stage_channels = set(self.encoder_hidden_sizes)
         spatial_hidden_states = [
-            hidden_state
-            for hidden_state in hidden_states
-            if hidden_state.ndim == 4 and hidden_state.shape[1] in valid_stage_channels
+            hidden_state for hidden_state in hidden_states
+            if hidden_state.ndim == 4
+            and hidden_state.shape[1] in valid_stage_channels
         ]
         if not spatial_hidden_states:
             raise ValueError(
-                "The selected ConvNeXt checkpoint returned hidden states, but none matched the expected ConvNeXt stage channels."
-            )
+                "The selected ConvNeXt checkpoint returned hidden states, "
+                "but none matched the expected ConvNeXt stage channels.")
 
         deduplicated_feature_maps: List[torch.Tensor] = []
         for hidden_state in spatial_hidden_states:
-            if (
-                deduplicated_feature_maps
-                and deduplicated_feature_maps[-1].shape[-2:] == hidden_state.shape[-2:]
-            ):
+            if (deduplicated_feature_maps
+                    and deduplicated_feature_maps[-1].shape[-2:]
+                    == hidden_state.shape[-2:]):
                 deduplicated_feature_maps[-1] = hidden_state
             else:
                 deduplicated_feature_maps.append(hidden_state)
 
         deduplicated_feature_maps = [
-            hidden_state
-            for hidden_state in deduplicated_feature_maps
+            hidden_state for hidden_state in deduplicated_feature_maps
             if hidden_state.shape[1] in valid_stage_channels
         ]
         return tuple(deduplicated_feature_maps)
 
     def forward(self, pixel_values: torch.Tensor, **kwargs):
         try:
-            from transformers.models.mask2former.modeling_mask2former import (
-                Mask2FormerPixelLevelModuleOutput,
-            )
+            from transformers.models.mask2former.modeling_mask2former import \
+                Mask2FormerPixelLevelModuleOutput
         except ImportError as exc:
             raise ImportError(
                 "transformers is required. Install with `pip install transformers`."
@@ -783,8 +801,7 @@ class ConvNeXtPixelLevelModuleBoosted(nn.Module): # Replaces Mask2Former's pixel
         base_height, base_width = selected_feature_maps[0].shape[-2:]
 
         for level, (projection, feature_map) in enumerate(
-            zip(self.input_projections, selected_feature_maps)
-        ):
+                zip(self.input_projections, selected_feature_maps)):
             target_height = max(base_height // (2**level), 1)
             target_width = max(base_width // (2**level), 1)
 
@@ -809,11 +826,13 @@ class ConvNeXtPixelLevelModuleBoosted(nn.Module): # Replaces Mask2Former's pixel
         )
 
 
-
 ############################################################
 #                     Model Definition                     #
 ############################################################
-class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt and a pretrained Mask2Former, then combine them into a single model
+class ConvNeXtMask2FormerBoostedModel(
+        nn.Module
+):  # Load a pretrained ConvNeXt and a pretrained Mask2Former, then combine them into a single model
+
     def __init__(
         self,
         args: argparse.Namespace,
@@ -822,13 +841,9 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
     ):
         super().__init__()
         try:
-            from transformers import (
-                AutoConfig,
-                AutoBackbone,
-                AutoImageProcessor,
-                AutoModel,
-                Mask2FormerForUniversalSegmentation,
-            )
+            from transformers import (AutoBackbone, AutoConfig,
+                                      AutoImageProcessor, AutoModel,
+                                      Mask2FormerForUniversalSegmentation)
         except ImportError as exc:
             raise ImportError(
                 "transformers is required. Install with `pip install transformers>=4.56.0`."
@@ -866,12 +881,10 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
             image_mean = getattr(processor, "image_mean", image_mean)
             image_std = getattr(processor, "image_std", image_std)
         except Exception as exc:
-            print(
-                "Warning: failed to load ConvNeXt image processor from "
-                f"{args.convnext_model_name_or_path}. "
-                "Falling back to default ImageNet normalization stats. "
-                f"Original error: {exc}"
-            )
+            print("Warning: failed to load ConvNeXt image processor from "
+                  f"{args.convnext_model_name_or_path}. "
+                  "Falling back to default ImageNet normalization stats. "
+                  f"Original error: {exc}")
 
         normalizer = DINOInputNormalizer(
             mean=image_mean,
@@ -902,11 +915,11 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
             if index >= len(hidden_sizes) or index < -len(hidden_sizes):
                 raise IndexError(
                     f"feature index {index} is out of range for ConvNeXt hidden sizes "
-                    f"{hidden_sizes}"
-                )
+                    f"{hidden_sizes}")
             encoder_hidden_sizes.append(hidden_sizes[index])
 
-        self.mask2former.model.pixel_level_module = ConvNeXtPixelLevelModuleBoosted(  # Replaces the original pixel-level module with the ConvNeXt-based module
+        # Replaces the original pixel-level module with the ConvNeXt-based module
+        self.mask2former.model.pixel_level_module = ConvNeXtPixelLevelModuleBoosted(
             encoder=encoder,
             normalizer=normalizer,
             feature_indices=args.feature_indices,
@@ -926,7 +939,6 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module): #Load a pretrained ConvNeXt an
 
     def forward(self, **kwargs):
         return self.mask2former(**kwargs)
-
 
 
 ############################################################
@@ -951,13 +963,13 @@ def main() -> None:
         f"Loaded {len(train_dataset)} training samples and {len(val_dataset)} validation samples."
     )
 
-    collator = GooseMask2FormerCollator(ignore_index=args.ignore_index) 
+    collator = GooseMask2FormerCollator(ignore_index=args.ignore_index)
     pin_memory = device.type == "cuda" and not args.disable_pin_memory
     persistent_workers = args.persistent_workers and args.num_workers > 0
 
     train_loader_kwargs = {
         "batch_size": args.batch_size,
-        "shuffle": True, 
+        "shuffle": True,
         "num_workers": args.num_workers,
         "drop_last": True,
         "pin_memory": pin_memory,
@@ -980,10 +992,11 @@ def main() -> None:
     train_loader = DataLoader(train_dataset, **train_loader_kwargs)
     val_loader = DataLoader(val_dataset, **val_loader_kwargs)
 
-    id2label = {i: f"class_{i}" for i in range(args.num_classes)} 
+    id2label = {i: f"class_{i}" for i in range(args.num_classes)}
     label2id = {label: idx for idx, label in id2label.items()}
 
-    model = ConvNeXtMask2FormerBoostedModel(args, id2label, label2id).to(device)
+    model = ConvNeXtMask2FormerBoostedModel(args, id2label,
+                                            label2id).to(device)
     optimizer = build_optimizer(args, model)
     scaler = torch.amp.GradScaler(
         device.type,
@@ -1000,12 +1013,10 @@ def main() -> None:
     ensure_epoch_log_file(epoch_log_path)
 
     start_epoch, best_val_loss, best_val_miou = resume_if_needed(
-        args, model, optimizer, scaler, device
-    )
+        args, model, optimizer, scaler, device)
 
-    total_training_steps = (args.epochs - start_epoch) * (
-        len(train_loader) + len(val_loader)
-    )
+    total_training_steps = (args.epochs - start_epoch) * (len(train_loader) +
+                                                          len(val_loader))
     global_progress = tqdm(
         total=total_training_steps,
         desc="Total Progress",
@@ -1045,13 +1056,12 @@ def main() -> None:
                 global_progress=global_progress,
             )
 
-            print(
-                f"epoch={epoch + 1} "
-                f"train_loss={train_loss:.4f} train_miou={train_miou:.4f} "
-                f"val_loss={val_loss:.4f} val_miou={val_miou:.4f}"
-            )
+            print(f"epoch={epoch + 1} "
+                  f"train_loss={train_loss:.4f} train_miou={train_miou:.4f} "
+                  f"val_loss={val_loss:.4f} val_miou={val_miou:.4f}")
 
-            miou_improved = val_miou > (best_val_miou + args.early_stopping_min_delta)
+            miou_improved = val_miou > (best_val_miou +
+                                        args.early_stopping_min_delta)
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -1081,7 +1091,9 @@ def main() -> None:
                     best_val_miou,
                     args,
                 )
-                print(f"Saved best loss checkpoint: val_loss={best_val_loss:.4f}")
+                print(
+                    f"Saved best loss checkpoint: val_loss={best_val_loss:.4f}"
+                )
 
             if miou_improved:
                 best_val_miou = val_miou
@@ -1112,7 +1124,9 @@ def main() -> None:
                     best_val_miou,
                     args,
                 )
-                print(f"Saved best mIoU checkpoint: val_miou={best_val_miou:.4f}")
+                print(
+                    f"Saved best mIoU checkpoint: val_miou={best_val_miou:.4f}"
+                )
             else:
                 epochs_without_improvement += 1
 

@@ -7,7 +7,6 @@ import argparse
 import csv
 import importlib.util
 import json
-import os
 import random
 import sys
 from pathlib import Path
@@ -25,7 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 if not hasattr(torch.amp, "GradScaler"):
-    torch.amp.GradScaler = torch.cuda.amp.GradScaler  
+    torch.amp.GradScaler = torch.cuda.amp.GradScaler
 
 
 def load_module(module_name: str, module_path: Path):
@@ -34,7 +33,8 @@ def load_module(module_name: str, module_path: Path):
         sys.path.insert(0, module_dir)
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
-        raise ImportError(f"Failed to load module {module_name} from {module_path}")
+        raise ImportError(
+            f"Failed to load module {module_name} from {module_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -50,12 +50,16 @@ def load_colormap(colormap_path: str) -> Dict[int, Tuple[int, int, int]]:
         raw = json.load(fp)
     cmap = {}
     for key, value in raw.items():
-        rgb = [int(channel) if channel > 1 else int(channel * 255) for channel in value]
+        rgb = [
+            int(channel) if channel > 1 else int(channel * 255)
+            for channel in value
+        ]
         cmap[int(key)] = tuple(rgb)
     return cmap
 
 
-def mask_to_color_image(mask: np.ndarray, colormap: Dict[int, Tuple]) -> np.ndarray:
+def mask_to_color_image(mask: np.ndarray, colormap: Dict[int,
+                                                         Tuple]) -> np.ndarray:
     h, w = mask.shape
     color_img = np.full((h, w, 3), 128, dtype=np.uint8)
     for cls_id, color in colormap.items():
@@ -84,16 +88,18 @@ def build_convnext_model(
     label2id: Dict[str, int],
 ) -> torch.nn.Module:
     for class_name in (
-        "ConvNeXtMask2FormerBoostedModel",
-        "ConvNeXtMask2FormerModel",
-        "DinoV3Mask2FormerModel",
+            "ConvNeXtMask2FormerBoostedModel",
+            "ConvNeXtMask2FormerModel",
+            "DinoV3Mask2FormerModel",
     ):
         if hasattr(module, class_name):
             return getattr(module, class_name)(args, id2label, label2id)
-    raise ValueError("Could not find a compatible model class in the training script.")
+    raise ValueError(
+        "Could not find a compatible model class in the training script.")
 
 
-def outputs_to_semantic_predictions(outputs, target_size: Tuple[int, int]) -> torch.Tensor:
+def outputs_to_semantic_predictions(
+        outputs, target_size: Tuple[int, int]) -> torch.Tensor:
     class_logits = outputs.class_queries_logits[..., :-1]
     mask_logits = outputs.masks_queries_logits
 
@@ -113,7 +119,8 @@ def outputs_to_semantic_predictions(outputs, target_size: Tuple[int, int]) -> to
 def load_goose_dataset_class(goose_tools_root: str):
     goose_root = Path(goose_tools_root).resolve()
     if not goose_root.exists():
-        raise FileNotFoundError(f"goose_tools_root does not exist: {goose_root}")
+        raise FileNotFoundError(
+            f"goose_tools_root does not exist: {goose_root}")
     if str(goose_root) not in sys.path:
         sys.path.insert(0, str(goose_root))
     from goosetools import GOOSE_Dataset
@@ -132,20 +139,20 @@ def infer_train_script_name(checkpoint_args: dict) -> str:
         return "dinov3_mask2former_train_512_64.py"
     raise ValueError(
         "Could not infer the training script from checkpoint args. "
-        f"run_name={run_name}, output_dir={output_dir}"
-    )
+        f"run_name={run_name}, output_dir={output_dir}")
 
 
 def resolve_train_script_path(script_name: str, extra_dirs) -> Path:
-    candidate_dirs = [TRAIN_SCRIPTS_DIR, *(Path(directory) for directory in extra_dirs)]
+    candidate_dirs = [
+        TRAIN_SCRIPTS_DIR, *(Path(directory) for directory in extra_dirs)
+    ]
     for directory in candidate_dirs:
         script_path = directory / script_name
         if script_path.exists():
             return script_path
     raise FileNotFoundError(
-        f"Could not find training script {script_name} in: "
-        + ", ".join(str(directory) for directory in candidate_dirs)
-    )
+        f"Could not find training script {script_name} in: " +
+        ", ".join(str(directory) for directory in candidate_dirs))
 
 
 def load_model_from_checkpoint(
@@ -160,12 +167,14 @@ def load_model_from_checkpoint(
     args = argparse.Namespace(**raw_args)
     script_name = infer_train_script_name(raw_args)
     script_path = resolve_train_script_path(script_name, train_script_dirs)
-    train_module = load_module(f"compare_gt_{script_name.replace('.', '_')}", script_path)
+    train_module = load_module(f"compare_gt_{script_name.replace('.', '_')}",
+                               script_path)
 
     id2label = {i: f"class_{i}" for i in range(args.num_classes)}
     label2id = {label: idx for idx, label in id2label.items()}
 
-    model = build_convnext_model(train_module, args, id2label, label2id).to(device)
+    model = build_convnext_model(train_module, args, id2label,
+                                 label2id).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
@@ -201,7 +210,10 @@ def visualize_comparison(
     gt_color = mask_to_color_image(gt_mask, colormap)
     pred_color = mask_to_color_image(pred_mask, colormap)
     gt_overlay = overlay_segmentation(image_np, gt_mask, colormap, alpha=0.5)
-    pred_overlay = overlay_segmentation(image_np, pred_mask, colormap, alpha=0.5)
+    pred_overlay = overlay_segmentation(image_np,
+                                        pred_mask,
+                                        colormap,
+                                        alpha=0.5)
 
     diff_mask = (gt_mask != pred_mask).astype(np.uint8)
     diff_vis = image_np.copy()
@@ -232,7 +244,8 @@ def visualize_comparison(
 
     axes[1, 2].imshow(diff_vis)
     error_pct = diff_mask.mean() * 100
-    axes[1, 2].set_title(f"Error Map (red = wrong, {error_pct:.1f}% pixels wrong)")
+    axes[1, 2].set_title(
+        f"Error Map (red = wrong, {error_pct:.1f}% pixels wrong)")
     axes[1, 2].axis("off")
 
     plt.tight_layout()
@@ -263,7 +276,8 @@ def parse_args() -> argparse.Namespace:
     default_colormap = str(PROJECT_ROOT / "common/goose_colormap.json")
     default_output = str(PROJECT_ROOT / "output/comparison_results_convnext")
 
-    parser = argparse.ArgumentParser("GT vs Prediction comparison for ConvNeXt")
+    parser = argparse.ArgumentParser(
+        "GT vs Prediction comparison for ConvNeXt")
     parser.add_argument(
         "--checkpoint",
         type=str,
@@ -326,7 +340,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Additional directory to search for training scripts when loading "
-             "checkpoint model classes. Can be passed multiple times.",
+        "checkpoint model classes. Can be passed multiple times.",
     )
     return parser.parse_args()
 
@@ -336,17 +350,15 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    device = torch.device(
-        args.device if (args.device == "cuda" and torch.cuda.is_available()) else "cpu"
-    )
+    device = torch.device(args.device if (
+        args.device == "cuda" and torch.cuda.is_available()) else "cpu")
     print(f"Device: {device}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model, model_args = load_model_from_checkpoint(
-        args.checkpoint, device, args.train_script_dir
-    )
+    model, model_args = load_model_from_checkpoint(args.checkpoint, device,
+                                                   args.train_script_dir)
 
     colormap = load_colormap(args.colormap)
     print(f"Colormap loaded: {len(colormap)} classes")
@@ -364,9 +376,8 @@ def main() -> None:
     if args.indices is not None:
         sample_indices = args.indices
     elif args.num_samples > 0:
-        sample_indices = random.sample(
-            range(len(dataset)), min(args.num_samples, len(dataset))
-        )
+        sample_indices = random.sample(range(len(dataset)),
+                                       min(args.num_samples, len(dataset)))
     else:
         sample_indices = []
 
@@ -374,7 +385,8 @@ def main() -> None:
         print(f"\nVisualizing {len(sample_indices)} samples...")
         for idx in tqdm(sample_indices, desc="Generating comparison images"):
             image_tensor, gt_tensor = dataset[idx]
-            image_pil, _gt_pil, _instance_pil, _color_pil = dataset.get_images(idx)
+            image_pil, _gt_pil, _instance_pil, _color_pil = dataset.get_images(
+                idx)
 
             gt_mask = np.array(gt_tensor)
             pred_mask = predict(model, image_tensor, device, gt_mask.shape)
@@ -386,7 +398,8 @@ def main() -> None:
 
             image_path = dataset.dataset_dict[idx]["img_path"]
             image_name = Path(image_path).stem
-            save_path = str(output_dir / f"comparison_{idx:05d}_{image_name}.png")
+            save_path = str(output_dir /
+                            f"comparison_{idx:05d}_{image_name}.png")
 
             visualize_comparison(
                 image=image_resized,
@@ -397,7 +410,9 @@ def main() -> None:
                 save_path=save_path,
             )
 
-        print(f"\nSaved {len(sample_indices)} comparison images to: {output_dir}")
+        print(
+            f"\nSaved {len(sample_indices)} comparison images to: {output_dir}"
+        )
 
     if args.eval_all or not sample_indices:
         print("\nRunning full evaluation on the dataset...")

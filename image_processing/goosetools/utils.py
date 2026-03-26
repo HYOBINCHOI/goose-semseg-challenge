@@ -1,7 +1,9 @@
 import argparse
-import numpy as np
-import matplotlib
 import json
+
+import matplotlib
+import numpy as np
+
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -12,7 +14,8 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError("Boolean value expected.")
-    
+
+
 def remapColor(color: list):
     remap = False
     for c in color:
@@ -22,9 +25,9 @@ def remapColor(color: list):
     if remap:
         color = [c / 255.0 for c in color]
 
-    return color 
- 
-    
+    return color
+
+
 def get_colormap(path: str = None, n_classes: int = 64) -> dict:
     cmap_dict = {}
 
@@ -42,14 +45,15 @@ def get_colormap(path: str = None, n_classes: int = 64) -> dict:
     if cmap_dict == {}:
         cmap_dict = {1: (1, 1, 0.4)}
 
-    #cmap = matplotlib.colors.ListedColormap(list(cmap_dict.values()))
-    
+    # cmap = matplotlib.colors.ListedColormap(list(cmap_dict.values()))
+
     return cmap_dict
-    
-    
-def overlay_masks(
-    img: np.ndarray, mask: np.ndarray, color_map: dict = {1: (1, 0, 0)}, alfa=0.6
-) -> np.ndarray:
+
+
+def overlay_masks(img: np.ndarray,
+                  mask: np.ndarray,
+                  color_map: dict = {1: (1, 0, 0)},
+                  alfa=0.6) -> np.ndarray:
     """
     Takes an image and a segmentation map and performs an overly with color 'color_map'
 

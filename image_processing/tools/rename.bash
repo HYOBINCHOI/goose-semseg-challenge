@@ -13,10 +13,10 @@ for ext in "${EXTENSIONS[@]}"; do
 	    # Get the relative path and create new filename
 	    relative_path="${file#$SOURCE_DIR/}"
 	    new_filename="${relative_path/${ext}/_labelids.png}"
-	    
+
 	    # Create the destination directory if it doesn't exist
 	    mkdir -p "$DEST_DIR/$(dirname "$new_filename")"
-	    
+
 	    # Copy the file to the new location with the new name
 	    cp "$file" "$DEST_DIR/$new_filename"
 	done

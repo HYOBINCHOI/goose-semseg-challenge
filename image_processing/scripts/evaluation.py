@@ -24,7 +24,6 @@ from torchvision.transforms import InterpolationMode
 
 TRAIN_SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 
-
 # -----------------------------
 # Competition settings
 # -----------------------------
@@ -109,13 +108,15 @@ DEFAULT_CLASSNAME_TO_COARSE = {
 }
 
 
-def fill_coarse_mapping_from_class_names(class_names, class_to_coarse, coarse_name_to_id) -> int:
+def fill_coarse_mapping_from_class_names(class_names, class_to_coarse,
+                                         coarse_name_to_id) -> int:
     applied = 0
     for class_id, class_name in enumerate(class_names):
         if class_to_coarse[class_id] != INVALID_COARSE_ID:
             continue
 
-        coarse_name = DEFAULT_CLASSNAME_TO_COARSE.get(class_name.strip().lower())
+        coarse_name = DEFAULT_CLASSNAME_TO_COARSE.get(
+            class_name.strip().lower())
         if coarse_name is None:
             continue
 
@@ -130,9 +131,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("path", type=str, help="Path to GOOSE dataset root")
     parser.add_argument("ckpt", type=str, help="Path to checkpoint to load")
-    parser.add_argument(
-        "--output", "-o", type=str, default="output", help="Path for output"
-    )
+    parser.add_argument("--output",
+                        "-o",
+                        type=str,
+                        default="output",
+                        help="Path for output")
 
     # Pre-processing
     parser.add_argument("--crop", action="store_true")
@@ -140,7 +143,7 @@ def parse_args() -> argparse.Namespace:
         "--use_processed_labels",
         action="store_true",
         help="Evaluate with processed labels (cropped/resized). "
-             "For competition-like evaluation, keep this False.",
+        "For competition-like evaluation, keep this False.",
     )
     parser.add_argument("--resize_width", "-rw", type=int, default=512)
     parser.add_argument("--resize_height", "-rh", type=int, default=512)
@@ -150,7 +153,8 @@ def parse_args() -> argparse.Namespace:
         "--iou",
         type=str2bool,
         default=True,
-        help="Whether to calculate the competition scores or not. [Default True]",
+        help=
+        "Whether to calculate the competition scores or not. [Default True]",
     )
     parser.add_argument(
         "--vis_res",
@@ -172,14 +176,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to goose_label_mapping.csv. "
-             "If not set, {path}/goose_label_mapping.csv will be used.",
+        "If not set, {path}/goose_label_mapping.csv will be used.",
     )
     parser.add_argument(
         "--train_script_dir",
         action="append",
         default=[],
         help="Additional directory to search for training scripts when loading "
-             "Mask2Former checkpoints. Can be passed multiple times.",
+        "Mask2Former checkpoints. Can be passed multiple times.",
     )
 
     return parser.parse_args()
@@ -213,8 +217,7 @@ def resolve_label_mapping_csv(dataset_root: str, csv_path: str) -> str:
     if not os.path.exists(default_path):
         raise FileNotFoundError(
             "Could not find goose_label_mapping.csv.\n"
-            "Please pass it explicitly with --label_mapping_csv"
-        )
+            "Please pass it explicitly with --label_mapping_csv")
     return default_path
 
 
@@ -235,7 +238,10 @@ def load_label_mapping(csv_path: str, n_classes: int):
     """
     class_names = [str(i) for i in range(n_classes)]
     class_to_coarse = [INVALID_COARSE_ID] * n_classes
-    coarse_name_to_id = {name: idx for idx, name in enumerate(COARSE_CATEGORIES)}
+    coarse_name_to_id = {
+        name: idx
+        for idx, name in enumerate(COARSE_CATEGORIES)
+    }
 
     parsed_rows = 0
 
@@ -244,8 +250,7 @@ def load_label_mapping(csv_path: str, n_classes: int):
 
         for row in reader:
             class_id_raw = get_first_existing(
-                row, ["class_id", "id", "label_id", "train_id", "label_key"]
-            )
+                row, ["class_id", "id", "label_id", "train_id", "label_key"])
             if class_id_raw is None:
                 continue
 
@@ -254,8 +259,7 @@ def load_label_mapping(csv_path: str, n_classes: int):
                 continue
 
             class_name_raw = get_first_existing(
-                row, ["class_name", "name", "label_name"]
-            )
+                row, ["class_name", "name", "label_name"])
             if class_name_raw is not None:
                 class_names[class_id] = class_name_raw.strip()
 
@@ -288,12 +292,10 @@ def load_label_mapping(csv_path: str, n_classes: int):
                 coarse_name = coarse_name_raw.strip()
                 if coarse_name.lower() != "void":
                     if coarse_name not in coarse_name_to_id:
-                        raise ValueError(
-                            "Unknown coarse category '{}' in {}\n"
-                            "Expected one of: {}".format(
-                                coarse_name, csv_path, COARSE_CATEGORIES
-                            )
-                        )
+                        raise ValueError("Unknown coarse category '{}' in {}\n"
+                                         "Expected one of: {}".format(
+                                             coarse_name, csv_path,
+                                             COARSE_CATEGORIES))
                     coarse_id = coarse_name_to_id[coarse_name]
 
             # Fallback to category_id if category_name is absent
@@ -311,8 +313,7 @@ def load_label_mapping(csv_path: str, n_classes: int):
     if parsed_rows == 0:
         raise ValueError(
             "Failed to parse any rows from label mapping CSV: {}\n"
-            "Please check the column names.".format(csv_path)
-        )
+            "Please check the column names.".format(csv_path))
 
     # If no coarse columns exist in CSV, all entries remain INVALID_COARSE_ID.
     # Fallback to built-in GOOSE class_name -> coarse mapping.
@@ -323,14 +324,12 @@ def load_label_mapping(csv_path: str, n_classes: int):
             coarse_name_to_id=coarse_name_to_id,
         )
         remaining = sum(x == INVALID_COARSE_ID for x in class_to_coarse)
-        print(
-            "[INFO] Applied {} fallback coarse mappings from class_name.".format(applied)
-        )
+        print("[INFO] Applied {} fallback coarse mappings from class_name.".
+              format(applied))
         if remaining > 0:
             print(
                 "[WARNING] {} classes still have no coarse mapping and will be ignored "
-                "in coarse evaluation.".format(remaining)
-            )
+                "in coarse evaluation.".format(remaining))
 
     return class_names, torch.tensor(class_to_coarse, dtype=torch.long)
 
@@ -358,9 +357,8 @@ def write_results_txt_and_json(
         "",
         "[Fine IoU per class]",
         *[
-            "{:>2d} ({:<20s}) : {}".format(
-                cls_id, class_names[cls_id], fine_ious[idx].item()
-            )
+            "{:>2d} ({:<20s}) : {}".format(cls_id, class_names[cls_id],
+                                           fine_ious[idx].item())
             for idx, cls_id in enumerate(fine_class_ids)
         ],
         "",
@@ -384,15 +382,17 @@ def write_results_txt_and_json(
         "mIoUcomposite": float(miou_composite.item()),
         "fine_per_class": {
             str(cls_id): {
-                "class_name": class_names[cls_id],
-                "iou": None if torch.isnan(fine_ious[idx]) else float(fine_ious[idx].item()),
+                "class_name":
+                class_names[cls_id],
+                "iou":
+                None if torch.isnan(fine_ious[idx]) else float(
+                    fine_ious[idx].item()),
             }
             for idx, cls_id in enumerate(fine_class_ids)
         },
         "coarse_per_category": {
-            COARSE_CATEGORIES[idx]: (
-                None if torch.isnan(coarse_ious[idx]) else float(coarse_ious[idx].item())
-            )
+            COARSE_CATEGORIES[idx]: (None if torch.isnan(coarse_ious[idx]) else
+                                     float(coarse_ious[idx].item()))
             for idx in range(len(COARSE_CATEGORIES))
         },
     }
@@ -450,13 +450,11 @@ def update_fine_confusion(conf_mat, gt, pred, n_classes):
     pred = pred.view(-1).long()
 
     excluded = torch.tensor(EXCLUDED_FINE_CLASS_IDS, device=gt.device)
-    valid = (
-        (gt >= 0)
-        & (gt < n_classes)
-        & (pred >= 0)
-        & (pred < n_classes)
-        & ~torch.isin(gt, excluded)
-    )
+    valid = ((gt >= 0)
+             & (gt < n_classes)
+             & (pred >= 0)
+             & (pred < n_classes)
+             & ~torch.isin(gt, excluded))
 
     gt = gt[valid]
     pred = pred[valid]
@@ -499,9 +497,8 @@ def update_coarse_confusion(conf_mat, gt, pred, class_to_coarse, n_classes):
 
     num_pred_bins = INVALID_COARSE_ID + 1  # 12
     indices = gt_coarse * num_pred_bins + pred_coarse
-    bincount = torch.bincount(
-        indices, minlength=len(COARSE_CATEGORIES) * num_pred_bins
-    )
+    bincount = torch.bincount(indices,
+                              minlength=len(COARSE_CATEGORIES) * num_pred_bins)
     conf_mat += bincount.reshape(len(COARSE_CATEGORIES), num_pred_bins)
 
 
@@ -512,7 +509,9 @@ def compute_fine_ious(conf_mat, n_classes):
     row_sum = conf_mat.sum(dim=1)
     col_sum = conf_mat.sum(dim=0)
 
-    fine_class_ids = [i for i in range(n_classes) if i not in EXCLUDED_FINE_CLASS_IDS]
+    fine_class_ids = [
+        i for i in range(n_classes) if i not in EXCLUDED_FINE_CLASS_IDS
+    ]
     fine_indices = torch.tensor(fine_class_ids, dtype=torch.long)
     union = row_sum[fine_indices] + col_sum[fine_indices] - tp[fine_indices]
     fine_ious = make_iou_tensor(tp[fine_indices], union)
@@ -557,7 +556,8 @@ def is_mask2former_checkpoint(ckpt_path: str) -> bool:
 
 def load_mask2former_checkpoint_payload(ckpt_path: str):
     checkpoint = torch.load(ckpt_path, map_location="cpu")
-    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
+    if not isinstance(checkpoint,
+                      dict) or "model_state_dict" not in checkpoint:
         raise ValueError(
             "Expected a Mask2Former training checkpoint with a model_state_dict field."
         )
@@ -578,47 +578,45 @@ def infer_mask2former_script_name(checkpoint_args: dict) -> str:
         return "dinov3_mask2former_train_512_64.py"
     raise ValueError(
         "Could not infer the training script from checkpoint args. "
-        f"run_name={run_name}, output_dir={output_dir}"
-    )
+        f"run_name={run_name}, output_dir={output_dir}")
 
 
 def resolve_train_script_path(script_name: str, extra_dirs) -> Path:
-    candidate_dirs = [TRAIN_SCRIPTS_DIR, *(Path(directory) for directory in extra_dirs)]
+    candidate_dirs = [
+        TRAIN_SCRIPTS_DIR, *(Path(directory) for directory in extra_dirs)
+    ]
     for directory in candidate_dirs:
         script_path = directory / script_name
         if script_path.exists():
             return script_path
     raise FileNotFoundError(
-        f"Could not find training script {script_name} in: "
-        + ", ".join(str(directory) for directory in candidate_dirs)
-    )
+        f"Could not find training script {script_name} in: " +
+        ", ".join(str(directory) for directory in candidate_dirs))
 
 
-def build_mask2former_model_from_checkpoint(
-    ckpt_path: str, device: torch.device, train_script_dirs
-):
+def build_mask2former_model_from_checkpoint(ckpt_path: str,
+                                            device: torch.device,
+                                            train_script_dirs):
     payload = load_mask2former_checkpoint_payload(ckpt_path)
     checkpoint_args = dict(payload.get("args", {}))
     checkpoint_args["device"] = str(device)
 
     script_name = infer_mask2former_script_name(checkpoint_args)
     script_path = resolve_train_script_path(script_name, train_script_dirs)
-    module = load_python_module(f"eval_{script_name.replace('.', '_')}", script_path)
+    module = load_python_module(f"eval_{script_name.replace('.', '_')}",
+                                script_path)
 
     model_cls = next(
-        (
-            getattr(module, name)
-            for name in (
-                "ConvNeXtMask2FormerBoostedModel",
-                "ConvNeXtMask2FormerModel",
-                "DinoV3Mask2FormerModel",
-            )
-            if hasattr(module, name)
-        ),
+        (getattr(module, name) for name in (
+            "ConvNeXtMask2FormerBoostedModel",
+            "ConvNeXtMask2FormerModel",
+            "DinoV3Mask2FormerModel",
+        ) if hasattr(module, name)),
         None,
     )
     if model_cls is None:
-        raise ValueError(f"Could not find a compatible model class in {script_path}")
+        raise ValueError(
+            f"Could not find a compatible model class in {script_path}")
 
     args_namespace = argparse.Namespace(**checkpoint_args)
     num_classes = int(checkpoint_args.get("num_classes", 64))
@@ -634,18 +632,18 @@ def build_mask2former_model_from_checkpoint(
 
 def run_mask2former_inference(img: torch.Tensor, model) -> torch.Tensor:
     outputs = model(pixel_values=img.unsqueeze(0))
-    prediction = outputs_to_semantic_predictions(outputs, target_size=img.shape[-2:])
+    prediction = outputs_to_semantic_predictions(outputs,
+                                                 target_size=img.shape[-2:])
     return prediction.squeeze(0)
 
 
-def load_model(
-    ckpt: str, device: torch.device, n_classes: int, train_script_dirs
-):
+def load_model(ckpt: str, device: torch.device, n_classes: int,
+               train_script_dirs):
     if is_mask2former_checkpoint(ckpt):
         model, payload = build_mask2former_model_from_checkpoint(
-            ckpt, device, train_script_dirs
-        )
-        checkpoint_num_classes = int(payload["args"].get("num_classes", n_classes))
+            ckpt, device, train_script_dirs)
+        checkpoint_num_classes = int(payload["args"].get(
+            "num_classes", n_classes))
         return model, payload, checkpoint_num_classes, True
 
     import super_gradients as sg
@@ -662,7 +660,8 @@ def load_model(
     return model, None, n_classes, False
 
 
-def infer_mask(img: torch.Tensor, model, use_mask2former_checkpoint: bool) -> torch.Tensor:
+def infer_mask(img: torch.Tensor, model,
+               use_mask2former_checkpoint: bool) -> torch.Tensor:
     if use_mask2former_checkpoint:
         return run_mask2former_inference(img, model=model)
     return run_inference(img, model=model, threshold=0.5)
@@ -682,22 +681,24 @@ if __name__ == "__main__":
 
     # Load label mapping
     if calculate_iou:
-        mapping_csv = resolve_label_mapping_csv(opt.path, opt.label_mapping_csv)
-        class_names, class_to_coarse = load_label_mapping(mapping_csv, n_classes)
+        mapping_csv = resolve_label_mapping_csv(opt.path,
+                                                opt.label_mapping_csv)
+        class_names, class_to_coarse = load_label_mapping(
+            mapping_csv, n_classes)
     else:
         class_names = [str(i) for i in range(n_classes)]
-        class_to_coarse = torch.full((n_classes,), INVALID_COARSE_ID, dtype=torch.long)
+        class_to_coarse = torch.full((n_classes, ),
+                                     INVALID_COARSE_ID,
+                                     dtype=torch.long)
 
     # Load model
     ckpt = strip_file_prefix(opt.ckpt)
     model, payload, checkpoint_num_classes, use_mask2former_checkpoint = load_model(
-        ckpt, device, n_classes, opt.train_script_dir
-    )
+        ckpt, device, n_classes, opt.train_script_dir)
     if checkpoint_num_classes != n_classes:
         print(
             "[WARNING] Overriding --n_classes={} with checkpoint num_classes={}."
-            .format(n_classes, checkpoint_num_classes)
-        )
+            .format(n_classes, checkpoint_num_classes))
         n_classes = checkpoint_num_classes
 
     # Load data
@@ -712,8 +713,8 @@ if __name__ == "__main__":
     # Competition-style confusion matrices
     fine_conf_mat = torch.zeros((n_classes, n_classes), dtype=torch.int64)
     coarse_conf_mat = torch.zeros(
-        (len(COARSE_CATEGORIES), len(COARSE_CATEGORIES) + 1), dtype=torch.int64
-    )
+        (len(COARSE_CATEGORIES), len(COARSE_CATEGORIES) + 1),
+        dtype=torch.int64)
 
     try:
         print("*** Processing images ***")
@@ -743,20 +744,20 @@ if __name__ == "__main__":
                     visualize(img_for_vis.cpu(), sem_map, mask)
 
                 if calculate_iou:
-                    update_fine_confusion(fine_conf_mat, sem_map, mask, n_classes)
-                    update_coarse_confusion(
-                        coarse_conf_mat, sem_map, mask, class_to_coarse, n_classes
-                    )
+                    update_fine_confusion(fine_conf_mat, sem_map, mask,
+                                          n_classes)
+                    update_coarse_confusion(coarse_conf_mat, sem_map, mask,
+                                            class_to_coarse, n_classes)
 
                     if (i + 1) % 50 == 0 or (i + 1) == len(validation_dataset):
-                        _, _, curr_fine = compute_fine_ious(fine_conf_mat, n_classes)
+                        _, _, curr_fine = compute_fine_ious(
+                            fine_conf_mat, n_classes)
                         _, curr_coarse = compute_coarse_ious(coarse_conf_mat)
                         curr_comp = 0.5 * curr_fine + 0.5 * curr_coarse
                         pbar.set_description(
                             "fine={:.4f}, coarse={:.4f}, comp={:.4f}".format(
-                                curr_fine.item(), curr_coarse.item(), curr_comp.item()
-                            )
-                        )
+                                curr_fine.item(), curr_coarse.item(),
+                                curr_comp.item()))
 
     except KeyboardInterrupt:
         print("Interrupted by user, saving results until now.")
@@ -764,13 +765,13 @@ if __name__ == "__main__":
         print("An error occurred: {}".format(e))
         raise
 
-    output_path = os.path.join(
-        opt.output, "evaluation", now.strftime("%m-%d-%Y_%H-%M-%S")
-    )
+    output_path = os.path.join(opt.output, "evaluation",
+                               now.strftime("%m-%d-%Y_%H-%M-%S"))
     os.makedirs(output_path, exist_ok=True)
 
     if calculate_iou:
-        fine_class_ids, fine_ious, miou_fine = compute_fine_ious(fine_conf_mat, n_classes)
+        fine_class_ids, fine_ious, miou_fine = compute_fine_ious(
+            fine_conf_mat, n_classes)
         coarse_ious, miou_coarse = compute_coarse_ious(coarse_conf_mat)
         miou_composite = 0.5 * miou_fine + 0.5 * miou_coarse
 

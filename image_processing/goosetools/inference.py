@@ -1,7 +1,8 @@
-from torchvision.transforms import ToPILImage, ToTensor
-from PIL import Image
-import torch
 from typing import Union
+
+import torch
+from PIL import Image
+from torchvision.transforms import ToTensor
 
 
 def load_image_tensor(img: Union[torch.Tensor, Image.Image, str]):

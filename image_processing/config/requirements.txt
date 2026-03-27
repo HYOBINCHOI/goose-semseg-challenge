@@ -3,3 +3,4 @@ matplotlib
 pillow
 numpy
 torchmetrics
+transformers>=4.56.0

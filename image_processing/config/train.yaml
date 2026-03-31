@@ -1,0 +1,44 @@
+data_path: /home/datasets/goose-dataset
+goose_tools_root: null  # auto-detected relative to the script location
+# output_dir: /path/to/output
+run_name: convnext_mask2former
+
+epochs: 100
+batch_size: 32
+num_workers: 4
+prefetch_factor: 1
+persistent_workers: false
+disable_pin_memory: false
+lr: 3.0e-5
+encoder_lr: 1.0e-5
+weight_decay: 0.05
+grad_clip_norm: 1.0
+grad_accum_steps: 1
+amp: true
+seed: 42
+device: cuda
+gradient_checkpointing: false
+
+resize_width: 512
+resize_height: 512
+crop: false
+num_classes: 64
+ignore_index: 255
+
+convnext_model_name_or_path: facebook/dinov3-convnext-large-pretrain-lvd1689m
+mask2former_pretrained_model_name_or_path: facebook/mask2former-swin-large-ade-semantic
+freeze_encoder: false
+freeze_mask2former_decoder: false
+
+feature_indices:
+  - 0
+  - 1
+  - 2
+  - 3
+disable_encoder_norm: false
+
+resume_from: null
+early_stopping_patience: 20
+early_stopping_min_delta: 1.0e-4
+save_every: 1
+dist_eval: false

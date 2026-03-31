@@ -17,8 +17,13 @@ def __check_labels(img_path: str,
     Check if pair of labels and images exist. Filter non-existing pairs.
     """
     name = os.path.basename(img_path)
-    name = (name.removesuffix("_windshield_vis.png").removesuffix("_front.png")
-            .removesuffix("_camera_left.png").removesuffix("_realsense.png"))
+    name = (
+        name.removesuffix("_windshield_vis.png")
+        .removesuffix("_front.png")
+        .removesuffix("_camera_left.png")
+        .removesuffix("_camera_right.png")
+        .removesuffix("_realsense.png")
+    )
 
     names = []
     for label_type in ["color", "instanceids", "labelids"]:

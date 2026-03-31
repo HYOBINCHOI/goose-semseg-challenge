@@ -1,6 +1,5 @@
 import argparse
 import csv
-import importlib.util
 import json
 import os
 import sys
@@ -12,17 +11,23 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import torch
-import tqdm
-from goosetools import GOOSE_Dataset
-from goosetools.data import load_splits
-from goosetools.inference import run_inference
-from goosetools.utils import str2bool
-from matplotlib import pyplot as plt
-from torchvision import transforms
-from torchvision.transforms import InterpolationMode
-
 TRAIN_SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(TRAIN_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TRAIN_SCRIPTS_DIR))
+
+import torch  # noqa: E402
+import tqdm  # noqa: E402
+from goosetools import GOOSE_Dataset  # noqa: E402
+from goosetools.data import load_splits  # noqa: E402
+from goosetools.inference import run_inference  # noqa: E402
+from goosetools.utils import str2bool  # noqa: E402
+from matplotlib import pyplot as plt  # noqa: E402
+from metrics import outputs_to_semantic_predictions  # noqa: E402
+from models import ConvNeXtMask2FormerBoostedModel  # noqa: E402
+from torchvision import transforms  # noqa: E402
+from torchvision.transforms import InterpolationMode  # noqa: E402
 
 # -----------------------------
 # Competition settings
@@ -423,23 +428,6 @@ def visualize(img: torch.Tensor, gt: torch.Tensor, res: torch.Tensor):
     plt.show()
 
 
-def outputs_to_semantic_predictions(outputs, target_size) -> torch.Tensor:
-    class_logits = outputs.class_queries_logits[..., :-1]
-    mask_logits = outputs.masks_queries_logits
-
-    class_probs = torch.softmax(class_logits, dim=-1)
-    mask_probs = torch.sigmoid(mask_logits)
-    semantic_logits = torch.einsum("bqc,bqhw->bchw", class_probs, mask_probs)
-    if semantic_logits.shape[-2:] != target_size:
-        semantic_logits = torch.nn.functional.interpolate(
-            semantic_logits,
-            size=target_size,
-            mode="bilinear",
-            align_corners=False,
-        )
-    return semantic_logits.argmax(dim=1)
-
-
 def update_fine_confusion(conf_mat, gt, pred, n_classes):
     """
     conf_mat: [n_classes, n_classes]
@@ -537,19 +525,6 @@ def compute_coarse_ious(conf_mat):
     return coarse_ious, miou_coarse
 
 
-def load_python_module(module_name: str, file_path: Path):
-    scripts_dir = str(file_path.parent.resolve())
-    if scripts_dir not in sys.path:
-        sys.path.insert(0, scripts_dir)
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Failed to load module from {file_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 def is_mask2former_checkpoint(ckpt_path: str) -> bool:
     return ckpt_path.endswith(".pt")
 
@@ -564,66 +539,18 @@ def load_mask2former_checkpoint_payload(ckpt_path: str):
     return checkpoint
 
 
-def infer_mask2former_script_name(checkpoint_args: dict) -> str:
-    run_name = str(checkpoint_args.get("run_name", ""))
-    output_dir = str(checkpoint_args.get("output_dir", ""))
-
-    if "convnext_mask2former_512_64_boosted" in run_name or "convnext_mask2former_512_64_boosted" in output_dir:
-        return "semantic_train_convnext.py"
-    if "convnext_mask2former" in run_name or "convnext_mask2former" in output_dir:
-        return "semantic_train_convnext.py"
-    if "dinov3_mask2former_regularized" in run_name or "dinov3_mask2former_regularized" in output_dir:
-        return "dinov3_mask2former_train_regularized.py"
-    if "dinov3" in run_name or "dinov3" in output_dir:
-        return "dinov3_mask2former_train_512_64.py"
-    raise ValueError(
-        "Could not infer the training script from checkpoint args. "
-        f"run_name={run_name}, output_dir={output_dir}")
-
-
-def resolve_train_script_path(script_name: str, extra_dirs) -> Path:
-    candidate_dirs = [
-        TRAIN_SCRIPTS_DIR, *(Path(directory) for directory in extra_dirs)
-    ]
-    for directory in candidate_dirs:
-        script_path = directory / script_name
-        if script_path.exists():
-            return script_path
-    raise FileNotFoundError(
-        f"Could not find training script {script_name} in: " +
-        ", ".join(str(directory) for directory in candidate_dirs))
-
-
 def build_mask2former_model_from_checkpoint(ckpt_path: str,
-                                            device: torch.device,
-                                            train_script_dirs):
+                                            device: torch.device):
     payload = load_mask2former_checkpoint_payload(ckpt_path)
     checkpoint_args = dict(payload.get("args", {}))
     checkpoint_args["device"] = str(device)
-
-    script_name = infer_mask2former_script_name(checkpoint_args)
-    script_path = resolve_train_script_path(script_name, train_script_dirs)
-    module = load_python_module(f"eval_{script_name.replace('.', '_')}",
-                                script_path)
-
-    model_cls = next(
-        (getattr(module, name) for name in (
-            "ConvNeXtMask2FormerBoostedModel",
-            "ConvNeXtMask2FormerModel",
-            "DinoV3Mask2FormerModel",
-        ) if hasattr(module, name)),
-        None,
-    )
-    if model_cls is None:
-        raise ValueError(
-            f"Could not find a compatible model class in {script_path}")
 
     args_namespace = argparse.Namespace(**checkpoint_args)
     num_classes = int(checkpoint_args.get("num_classes", 64))
     id2label = {i: f"class_{i}" for i in range(num_classes)}
     label2id = {label: idx for idx, label in id2label.items()}
 
-    model = model_cls(args_namespace, id2label, label2id)
+    model = ConvNeXtMask2FormerBoostedModel(args_namespace, id2label, label2id)
     model.load_state_dict(payload["model_state_dict"], strict=True)
     model = model.to(device)
     model.eval()

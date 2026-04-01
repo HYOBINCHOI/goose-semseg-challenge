@@ -72,5 +72,18 @@ The original training script was split into smaller modules for readability and 
   - output directory generation
 
 ______________________________________________________________________
+### Submission file generation
 
+Use `tools/make_submission_zip.py` to generate prediction PNGs and package them into a submission zip for the website.
+
+#### Example
+
+```bash
+python /goose-semseg-challenge/image_processing/tools/make_submission_zip.py \
+  --dataset_root /home/datasets/goose-dataset \
+  --checkpoint /path/to/model.pt \
+  --output_dir /path/to/submission_pngs \
+  --output_zip /path/to/submission.zip
+```
+______________________________________________________________________
 ### Notes

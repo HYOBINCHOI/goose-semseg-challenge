@@ -567,8 +567,7 @@ def run_mask2former_inference(img: torch.Tensor, model) -> torch.Tensor:
 def load_model(ckpt: str, device: torch.device, n_classes: int,
                train_script_dirs):
     if is_mask2former_checkpoint(ckpt):
-        model, payload = build_mask2former_model_from_checkpoint(
-            ckpt, device, train_script_dirs)
+        model, payload = build_mask2former_model_from_checkpoint(ckpt, device)
         checkpoint_num_classes = int(payload["args"].get(
             "num_classes", n_classes))
         return model, payload, checkpoint_num_classes, True

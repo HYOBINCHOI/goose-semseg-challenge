@@ -203,6 +203,7 @@ cython_debug/
 
 image_processing/scripts/outputs/
 */outputs/
+output/*
 # Marimo
 marimo/_static/
 marimo/_lsp/

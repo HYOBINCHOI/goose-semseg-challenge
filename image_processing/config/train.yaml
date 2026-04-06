@@ -30,6 +30,11 @@ mask2former_pretrained_model_name_or_path: facebook/mask2former-swin-large-ade-s
 freeze_encoder: false
 freeze_mask2former_decoder: false
 
+classification_loss_type: seesaw
+seesaw_p: 0.8
+seesaw_q: 2.0
+seesaw_eps: 1.0e-2
+
 feature_indices:
   - 0
   - 1

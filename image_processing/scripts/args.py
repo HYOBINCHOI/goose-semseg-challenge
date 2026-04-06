@@ -81,7 +81,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run_name", type=str, default="convnext_mask2former")
 
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--prefetch_factor", type=int, default=1)
     parser.add_argument("--persistent_workers", action="store_true")
@@ -172,6 +172,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_false",
         help=
         "Average focal classification loss over queries instead of matched masks.",
+    )
+    parser.add_argument(
+        "--classification_loss_type",
+        type=str,
+        default=None,
+        choices=["ce", "focal", "seesaw"],
+        help="Override the query classification loss type. Defaults to focal when --use_focal_loss is set, else ce.",
+    )
+    parser.add_argument(
+        "--seesaw_p",
+        type=float,
+        default=0.8,
+        help="Mitigation factor exponent p used by the Seesaw classification loss.",
+    )
+    parser.add_argument(
+        "--seesaw_q",
+        type=float,
+        default=2.0,
+        help="Compensation factor exponent q used by the Seesaw classification loss.",
+    )
+    parser.add_argument(
+        "--seesaw_eps",
+        type=float,
+        default=1e-2,
+        help="Epsilon used to stabilize the Seesaw compensation factor.",
     )
     parser.add_argument(
         "--feature_indices",

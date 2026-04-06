@@ -386,6 +386,87 @@ def softmax_focal_loss(
     return loss.mean()
 
 
+def weight_reduce_loss(
+    loss: Tensor,
+    weight: Tensor | None = None,
+    reduction: str = "mean",
+    avg_factor: float | Tensor | None = None,
+) -> Tensor:
+    if weight is not None:
+        loss = loss * weight
+
+    if avg_factor is None:
+        if reduction == "none":
+            return loss
+        if reduction == "sum":
+            return loss.sum()
+        if reduction == "mean":
+            return loss.mean()
+        raise ValueError(f"Unsupported reduction: {reduction}")
+
+    if reduction == "none":
+        return loss
+    if reduction != "mean":
+        raise ValueError("avg_factor can only be used with reduction='mean'")
+    if isinstance(avg_factor, torch.Tensor):
+        avg_factor = avg_factor.detach().float().item()
+    return loss.sum() / max(float(avg_factor), 1.0)
+
+
+def seesaw_ce_loss(
+    cls_score: Tensor,
+    labels: Tensor,
+    label_weights: Tensor | None,
+    cum_samples: Tensor,
+    num_classes: int,
+    p: float,
+    q: float,
+    eps: float,
+    reduction: str = "mean",
+    avg_factor: float | Tensor | None = None,
+) -> Tensor:
+    if cls_score.size(-1) != num_classes:
+        raise ValueError(
+            f"Seesaw loss expects {num_classes} class logits, "
+            f"but got {cls_score.size(-1)}.")
+    if cum_samples.numel() != num_classes:
+        raise ValueError(
+            f"Seesaw cumulative samples must have length {num_classes}, "
+            f"but got {cum_samples.numel()}.")
+
+    onehot_labels = F.one_hot(labels, num_classes)
+    seesaw_weights = cls_score.new_ones(onehot_labels.size())
+
+    if p > 0:
+        sample_ratio_matrix = cum_samples[None, :].clamp(
+            min=1) / cum_samples[:, None].clamp(min=1)
+        index = (sample_ratio_matrix < 1.0).float()
+        sample_weights = sample_ratio_matrix.pow(p) * index + (1 - index)
+        mitigation_factor = sample_weights[labels.long(), :]
+        seesaw_weights = seesaw_weights * mitigation_factor
+
+    if q > 0:
+        scores = F.softmax(cls_score.detach(), dim=1)
+        self_scores = scores[torch.arange(len(scores), device=scores.device),
+                             labels.long()]
+        score_matrix = scores / self_scores[:, None].clamp(min=eps)
+        index = (score_matrix > 1.0).float()
+        compensation_factor = score_matrix.pow(q) * index + (1 - index)
+        seesaw_weights = seesaw_weights * compensation_factor
+
+    adjusted_score = cls_score + (seesaw_weights.log() * (1 - onehot_labels))
+    loss = F.cross_entropy(adjusted_score, labels, reduction="none")
+
+    if label_weights is not None:
+        label_weights = label_weights.float()
+    return weight_reduce_loss(
+        loss,
+        weight=label_weights,
+        reduction=reduction,
+        avg_factor=avg_factor,
+    )
+
+
 # Copied from transformers.models.maskformer.modeling_maskformer.pair_wise_dice_loss
 def pair_wise_dice_loss(inputs: Tensor, labels: Tensor) -> Tensor:
     """
@@ -583,14 +664,29 @@ class Mask2FormerLoss(nn.Module):
         requires_backends(self, ["scipy"])
         self.num_labels = config.num_labels
         self.weight_dict = weight_dict
-        self.use_focal_loss = getattr(config, "use_focal_loss", False)
-        self.focal_alpha = getattr(config, "focal_alpha", 0.25)
+        self.use_focal_loss = getattr(config, "use_focal_loss", True)
+        self.focal_alpha = getattr(config, "focal_alpha", 1.0)
         self.focal_class_alphas = getattr(config, "focal_class_alphas", None)
         self.focal_no_object_alpha = getattr(config, "focal_no_object_alpha",
                                              None)
         self.focal_gamma = getattr(config, "focal_gamma", 2.0)
         self.focal_normalize_by_num_masks = getattr(
             config, "focal_normalize_by_num_masks", True)
+        self.classification_loss_type = getattr(config,
+                                                "classification_loss_type",
+                                                None)
+        if self.classification_loss_type is None:
+            self.classification_loss_type = ("focal"
+                                             if self.use_focal_loss else "ce")
+        self.classification_loss_type = str(
+            self.classification_loss_type).lower()
+        if self.classification_loss_type not in {"ce", "focal", "seesaw"}:
+            raise ValueError(
+                "classification_loss_type must be one of {'ce', 'focal', 'seesaw'}. "
+                f"Got {self.classification_loss_type!r}.")
+        self.seesaw_p = float(getattr(config, "seesaw_p", 0.8))
+        self.seesaw_q = float(getattr(config, "seesaw_q", 2.0))
+        self.seesaw_eps = float(getattr(config, "seesaw_eps", 1e-2))
         # Weight to apply to the null class
         self.eos_coef = config.no_object_weight
         empty_weight = torch.ones(self.num_labels + 1)
@@ -598,6 +694,9 @@ class Mask2FormerLoss(nn.Module):
         self.register_buffer("empty_weight", empty_weight)
         self.register_buffer("focal_alpha_weights",
                              self._build_focal_alpha_weights())
+        self.register_buffer("seesaw_cum_samples",
+                             torch.zeros(self.num_labels,
+                                         dtype=torch.float32))
 
         # pointwise mask loss parameters
         self.num_points = config.train_num_points
@@ -717,8 +816,9 @@ class Mask2FormerLoss(nn.Module):
         class_labels: list[Tensor],
         indices: tuple[np.array],
         num_masks: Tensor,
+        update_seesaw_statistics: bool = True,
     ) -> dict[str, Tensor]:
-        pred_logits = class_queries_logits
+        pred_logits = class_queries_logits.float()
         batch_size, num_queries, _ = pred_logits.shape
 
         idx = self._get_predictions_permutation_indices(indices)
@@ -733,7 +833,13 @@ class Mask2FormerLoss(nn.Module):
         target_classes[idx] = target_classes_o
 
         pred_logits_transposed = pred_logits.transpose(1, 2)
-        if self.use_focal_loss:
+        if self.classification_loss_type == "seesaw":
+            loss_ce = self._seesaw_classification_loss(
+                pred_logits,
+                target_classes,
+                update_statistics=update_seesaw_statistics,
+            )
+        elif self.classification_loss_type == "focal":
             normalizer = num_masks if self.focal_normalize_by_num_masks else None
             loss_ce = softmax_focal_loss(
                 pred_logits_transposed,
@@ -829,6 +935,68 @@ class Mask2FormerLoss(nn.Module):
         target_indices = torch.cat([tgt for (_, tgt) in indices])
         return batch_indices, target_indices
 
+    def _update_seesaw_cum_samples(self, labels: Tensor) -> None:
+        if (not self.training) or labels.numel() == 0:
+            return
+
+        with torch.no_grad():
+            batch_counts = torch.bincount(labels.detach().reshape(-1),
+                                          minlength=self.num_labels).to(
+                                              device=self.seesaw_cum_samples.
+                                              device,
+                                              dtype=self.seesaw_cum_samples.
+                                              dtype,
+                                          )
+            if (torch.distributed.is_available()
+                    and torch.distributed.is_initialized()):
+                torch.distributed.all_reduce(batch_counts)
+            self.seesaw_cum_samples.add_(batch_counts)
+
+    def _seesaw_classification_loss(self,
+                                    pred_logits: Tensor,
+                                    target_classes: Tensor,
+                                    update_statistics: bool = True) -> Tensor:
+        flat_logits = pred_logits.reshape(-1, pred_logits.shape[-1]).float()
+        flat_targets = target_classes.reshape(-1)
+        foreground_mask = flat_targets != self.num_labels
+        no_object_mask = ~foreground_mask
+
+        total_loss = flat_logits.new_zeros(())
+        total_weight = flat_logits.new_zeros(())
+
+        if foreground_mask.any():
+            foreground_logits = flat_logits[foreground_mask, :self.num_labels]
+            foreground_targets = flat_targets[foreground_mask]
+            if update_statistics and self.training:
+                self._update_seesaw_cum_samples(foreground_targets)
+            foreground_weights = foreground_logits.new_ones(
+                foreground_targets.shape[0], dtype=torch.float32)
+            foreground_loss = seesaw_ce_loss(
+                foreground_logits,
+                foreground_targets,
+                foreground_weights,
+                self.seesaw_cum_samples,
+                self.num_labels,
+                self.seesaw_p,
+                self.seesaw_q,
+                self.seesaw_eps,
+                reduction="sum",
+            )
+            total_loss = total_loss + foreground_loss
+            total_weight = total_weight + foreground_weights.sum()
+
+        if no_object_mask.any():
+            no_object_logits = flat_logits[no_object_mask]
+            no_object_targets = flat_targets[no_object_mask]
+            no_object_loss = F.cross_entropy(no_object_logits,
+                                             no_object_targets,
+                                             reduction="sum")
+            total_loss = total_loss + self.eos_coef * no_object_loss
+            total_weight = total_weight + flat_logits.new_tensor(
+                float(no_object_targets.numel()) * float(self.eos_coef))
+
+        return total_loss / total_weight.clamp(min=1.0)
+
     def calculate_uncertainty(self, logits: torch.Tensor) -> torch.Tensor:
         """
         In Mask2Former paper, uncertainty is estimated as L1 distance between 0.0 and the logit prediction in 'logits'
@@ -915,13 +1083,14 @@ class Mask2FormerLoss(nn.Module):
             )
         return point_coordinates
 
-    def forward(
+    def forward( #loss_masks + loss_labels
         self,
         masks_queries_logits: torch.Tensor,
         class_queries_logits: torch.Tensor,
         mask_labels: list[torch.Tensor],
         class_labels: list[torch.Tensor],
         auxiliary_predictions: dict[str, torch.Tensor] | None = None,
+        update_seesaw_statistics: bool = True,
     ) -> dict[str, torch.Tensor]:
         """
         This performs the loss computation.
@@ -960,7 +1129,7 @@ class Mask2FormerLoss(nn.Module):
         # get all the losses
         losses: dict[str, Tensor] = {
             **self.loss_masks(masks_queries_logits, mask_labels, class_labels, indices, num_masks),
-            **self.loss_labels(class_queries_logits, class_labels, indices, num_masks),
+            **self.loss_labels(class_queries_logits, class_labels, indices, num_masks, update_seesaw_statistics),
         }
         # in case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if auxiliary_predictions is not None:
@@ -969,7 +1138,8 @@ class Mask2FormerLoss(nn.Module):
                 class_queries_logits = aux_outputs["class_queries_logits"]
                 loss_dict = self.forward(masks_queries_logits,
                                          class_queries_logits, mask_labels,
-                                         class_labels)
+                                         class_labels,
+                                         update_seesaw_statistics=False)
                 loss_dict = {
                     f"{key}_{idx}": value
                     for key, value in loss_dict.items()

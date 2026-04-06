@@ -316,6 +316,11 @@ class ConvNeXtMask2FormerBoostedModel(nn.Module):
         mask2former_config.focal_gamma = getattr(args, "focal_gamma", 2.0)
         mask2former_config.focal_normalize_by_num_masks = getattr(
             args, "focal_normalize_by_num_masks", True)
+        mask2former_config.classification_loss_type = getattr(
+            args, "classification_loss_type", None)
+        mask2former_config.seesaw_p = getattr(args, "seesaw_p", 0.8)
+        mask2former_config.seesaw_q = getattr(args, "seesaw_q", 2.0)
+        mask2former_config.seesaw_eps = getattr(args, "seesaw_eps", 1e-2)
 
         self.mask2former = Mask2FormerForUniversalSegmentation.from_pretrained(
             args.mask2former_pretrained_model_name_or_path,

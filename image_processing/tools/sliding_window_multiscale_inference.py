@@ -5,7 +5,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -28,6 +28,9 @@ from torchvision.transforms import InterpolationMode
 from evaluation import (compute_coarse_ious, compute_fine_ious,
                         load_label_mapping, resolve_label_mapping_csv,
                         update_coarse_confusion, update_fine_confusion)
+from make_submission_zip import (build_name_index, copy_submission_files,
+                                 load_target_names, prepare_output_dir,
+                                 validate_submission_zip, write_submission_zip)
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--crop", action="store_true")
     parser.add_argument("--resize_width", type=int, default=512)
     parser.add_argument("--resize_height", type=int, default=512)
+    parser.add_argument(
+        "--disable_resize",
+        action="store_true",
+        help="Use raw image size at inference time instead of resizing first.",
+    )
     parser.add_argument("--n_classes", type=int, default=64)
     parser.add_argument(
         "--use_processed_labels",
@@ -80,6 +88,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable_sliding_window",
                         action="store_true",
                         help="Run single-crop inference instead")
+    parser.add_argument(
+        "--merge_weighting",
+        type=str,
+        choices=("uniform", "center"),
+        default="uniform",
+        help="How to merge overlapping sliding-window crops. "
+        "'uniform' reproduces the old behavior, while 'center' "
+        "gives higher weight to crop centers.",
+    )
+    parser.add_argument(
+        "--edge_weight_floor",
+        type=float,
+        default=0.1,
+        help="Minimum edge weight when --merge_weighting center is used.",
+    )
     parser.add_argument("--save_predictions",
                         action="store_true",
                         help="Save predicted masks as .pt tensors")
@@ -88,6 +111,35 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Save prediction masks as PNG files. "
         "This is recommended for test-split submission generation.",
+    )
+    parser.add_argument(
+        "--make_submission_zip",
+        action="store_true",
+        help="After test inference, filter generated PNGs and create a submission zip.",
+    )
+    parser.add_argument(
+        "--scene_lists_dir",
+        type=str,
+        default=str(PROJECT_ROOT.parent / "common"),
+        help="Directory containing the official scene-list txt files.",
+    )
+    parser.add_argument(
+        "--submission_output_dir",
+        type=str,
+        default=None,
+        help="Directory where filtered submission PNGs will be copied.",
+    )
+    parser.add_argument(
+        "--submission_output_zip",
+        type=str,
+        default=None,
+        help="Path to the final submission zip file.",
+    )
+    parser.add_argument(
+        "--expected_submission_count",
+        type=int,
+        default=361,
+        help="Expected number of files in the final submission zip.",
     )
     return parser.parse_args()
 
@@ -204,11 +256,45 @@ def generate_window_starts(length: int, window_size: int,
     return starts
 
 
+def build_merge_weight_map(height: int,
+                           width: int,
+                           device: torch.device,
+                           mode: str,
+                           edge_weight_floor: float) -> torch.Tensor:
+    # 겹치는 crop를 합칠 때 사용할 2D 가중치 맵을 만든다.
+    #
+    # uniform:
+    # - 기존 구현과 동일하게 모든 위치를 같은 가중치(1.0)로 본다.
+    #
+    # center:
+    # - crop 중앙은 크게, 가장자리는 작게 가중치를 준다.
+    # - 경계부 예측이 상대적으로 불안정할 수 있다는 가정하에
+    #   중앙부 예측을 조금 더 신뢰하도록 만드는 방식이다.
+    if mode == "uniform":
+        return torch.ones((1, 1, height, width), device=device)
+
+    edge_weight_floor = float(min(max(edge_weight_floor, 0.0), 1.0))
+    y_coords = torch.linspace(-1.0, 1.0, steps=height, device=device)
+    x_coords = torch.linspace(-1.0, 1.0, steps=width, device=device)
+
+    # 가장자리에서는 0, 중앙에서는 1이 되는 1D 프로파일을 만든 뒤
+    # floor를 더해 edge weight가 완전히 0이 되지 않게 한다.
+    y_profile = 1.0 - y_coords.abs()
+    x_profile = 1.0 - x_coords.abs()
+    y_profile = edge_weight_floor + (1.0 - edge_weight_floor) * y_profile
+    x_profile = edge_weight_floor + (1.0 - edge_weight_floor) * x_profile
+
+    weight_map = torch.outer(y_profile, x_profile)
+    return weight_map.unsqueeze(0).unsqueeze(0)
+
+
 def sliding_window_inference(model: torch.nn.Module,
                              image: torch.Tensor,
                              num_classes: int,
                              window_size: int,
-                             stride: int) -> torch.Tensor:
+                             stride: int,
+                             merge_weighting: str,
+                             edge_weight_floor: float) -> torch.Tensor:
     # sliding window 추론의 핵심 함수.
     #
     # 입력 이미지를 여러 crop으로 나눠서 순차적으로 추론하고,
@@ -233,11 +319,18 @@ def sliding_window_inference(model: torch.nn.Module,
             right = min(left + window_size, width)
             crop = image[:, :, top:bottom, left:right]
             crop_logits = predict_crop_logits(model, crop)
+            crop_weight = build_merge_weight_map(
+                height=bottom - top,
+                width=right - left,
+                device=image.device,
+                mode=merge_weighting,
+                edge_weight_floor=edge_weight_floor,
+            )
 
             # crop 위치에 해당하는 원본 영역에 logits를 더한다.
             # 같은 위치가 여러 crop에 포함될 수 있으므로 count도 같이 누적한다.
-            logits_sum[:, :, top:bottom, left:right] += crop_logits
-            logits_count[:, :, top:bottom, left:right] += 1
+            logits_sum[:, :, top:bottom, left:right] += crop_logits * crop_weight
+            logits_count[:, :, top:bottom, left:right] += crop_weight
 
     # 누적된 logits를 count로 나눠, 겹친 영역은 평균 logits로 만든다.
     return logits_sum / logits_count.clamp_min(1.0)
@@ -248,7 +341,9 @@ def infer_single_scale(model: torch.nn.Module,
                        num_classes: int,
                        use_sliding_window: bool,
                        window_size: int,
-                       stride: int) -> torch.Tensor:
+                       stride: int,
+                       merge_weighting: str,
+                       edge_weight_floor: float) -> torch.Tensor:
     # scale 하나에 대해서만 inference를 수행하는 wrapper 함수.
     #
     # - use_sliding_window=True  : window 단위로 나눠서 추론
@@ -257,7 +352,8 @@ def infer_single_scale(model: torch.nn.Module,
     # multiscale 함수에서는 scale마다 이 함수를 호출한다.
     if use_sliding_window:
         return sliding_window_inference(model, image, num_classes, window_size,
-                                        stride)
+                                        stride, merge_weighting,
+                                        edge_weight_floor)
     return predict_crop_logits(model, image)
 
 
@@ -267,7 +363,9 @@ def multiscale_inference(model: torch.nn.Module,
                          scales: Sequence[float],
                          use_sliding_window: bool,
                          window_size: int,
-                         stride: int) -> torch.Tensor:
+                         stride: int,
+                         merge_weighting: str,
+                         edge_weight_floor: float) -> torch.Tensor:
     # multiscale inference의 핵심 함수.
     #
     # 같은 이미지를 여러 scale로 resize한 뒤,
@@ -302,6 +400,8 @@ def multiscale_inference(model: torch.nn.Module,
             use_sliding_window=use_sliding_window,
             window_size=window_size,
             stride=stride,
+            merge_weighting=merge_weighting,
+            edge_weight_floor=edge_weight_floor,
         )
 
         # 서로 다른 scale 결과를 합치기 위해 원본 크기로 다시 올린다.
@@ -361,9 +461,14 @@ def collect_test_image_paths(dataset_root: str) -> List[str]:
 
 
 def preprocess_image_like_dataset(image: Image.Image, crop: bool,
-                                  resize_size: Sequence[int]) -> torch.Tensor:
+                                  resize_size: Optional[Sequence[int]]) -> torch.Tensor:
     # GOOSE_Dataset.preprocess와 동일한 규칙으로 test image를 전처리한다.
     if crop:
+        if resize_size is None:
+            raise ValueError(
+                "--crop and --disable_resize cannot be used together in the "
+                "current pipeline because crop ratio is derived from resize size."
+            )
         crop_ratio = resize_size[0] / resize_size[1]
         input_ratio = image.width / image.height
 
@@ -379,10 +484,41 @@ def preprocess_image_like_dataset(image: Image.Image, crop: bool,
 
         image = transforms.CenterCrop((new_height, new_width)).forward(image)
 
-    if resize_size is not None:
+    if _size is not None:
         image = image.resize(resize_size, resample=Image.BILINEAR)
 
     return transforms.ToTensor()(image)
+
+
+def build_submission_from_predictions(
+    prediction_png_dir: Path,
+    scene_lists_dir: Path,
+    submission_output_dir: Path,
+    submission_output_zip: Path,
+    expected_submission_count: Optional[int],
+) -> Tuple[int, int]:
+    target_names = load_target_names(
+        scene_lists_dir,
+        [
+            "text file with ALICE scenes.txt",
+            "text file with MuCAR-3 scenes.txt",
+            "text file with Spotv1 scenes.txt",
+            "text file with Spotv2 scenes.txt",
+        ],
+    )
+    prediction_files = sorted(prediction_png_dir.rglob("*.png"))
+    exact_base_map, prefix_timestamp_map = build_name_index(prediction_files)
+
+    prepare_output_dir(submission_output_dir)
+    created_files = copy_submission_files(
+        target_names=target_names,
+        output_dir=submission_output_dir,
+        exact_base_map=exact_base_map,
+        prefix_timestamp_map=prefix_timestamp_map,
+    )
+    write_submission_zip(submission_output_zip, created_files)
+    validate_submission_zip(submission_output_zip, expected_submission_count)
+    return len(target_names), len(created_files)
 
 
 def main() -> None:
@@ -395,6 +531,12 @@ def main() -> None:
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+
+    if args.disable_resize and args.crop:
+        raise ValueError(
+            "--disable_resize and --crop cannot be combined in the current "
+            "implementation. Disable crop when running raw-size inference."
+        )
 
     # 1) checkpoint로부터 학습된 모델 복원
     ckpt = strip_file_prefix(args.ckpt)
@@ -421,7 +563,8 @@ def main() -> None:
         validation_dataset = GOOSE_Dataset(
             validation_dict,
             crop=args.crop,
-            resize_size=[args.resize_width, args.resize_height],
+            resize_size=None if args.disable_resize else
+            [args.resize_width, args.resize_height],
             with_instances=False,
         )
 
@@ -441,7 +584,7 @@ def main() -> None:
     pbar = tqdm.tqdm(range(total_items))
     with torch.no_grad():
         for index in pbar:
-            if is_test_split:
+            if is_test_split:                   # test or val
                 image_path = test_image_paths[index]
                 original_image = Image.open(image_path).convert("RGB")
                 original_height = original_image.height
@@ -449,7 +592,8 @@ def main() -> None:
                 image = preprocess_image_like_dataset(
                     original_image,
                     crop=args.crop,
-                    resize_size=[args.resize_width, args.resize_height],
+                    resize_size=None if args.disable_resize else
+                    [args.resize_width, args.resize_height],
                 ).unsqueeze(0).to(device)
                 semantic_map = None
             else:
@@ -468,6 +612,8 @@ def main() -> None:
                 use_sliding_window=not args.disable_sliding_window,
                 window_size=args.window_size,
                 stride=args.stride,
+                merge_weighting=args.merge_weighting,
+                edge_weight_floor=args.edge_weight_floor,
             )
 
             # 4) dense logits -> 최종 semantic class map
@@ -519,17 +665,37 @@ def main() -> None:
     if is_test_split:
         print("Finished test inference.")
         print(f"Prediction PNG directory: {output_dir / 'prediction_pngs'}")
-        with open(output_dir / "results.json", "w", encoding="utf-8") as fp:
-            json.dump(
-                {
-                    "mode": "test_inference",
-                    "num_images": total_items,
-                    "prediction_png_dir": str(output_dir / "prediction_pngs"),
-                    "num_classes": num_classes,
-                },
-                fp,
-                indent=2,
+        result_payload = {
+            "mode": "test_inference",
+            "num_images": total_items,
+            "prediction_png_dir": str(output_dir / "prediction_pngs"),
+            "num_classes": num_classes,
+        }
+
+        if args.make_submission_zip:
+            submission_output_dir = Path(
+                args.submission_output_dir) if args.submission_output_dir is not None else output_dir / "submission_pngs"
+            submission_output_zip = Path(
+                args.submission_output_zip) if args.submission_output_zip is not None else output_dir / "submission.zip"
+
+            target_count, created_count = build_submission_from_predictions(
+                prediction_png_dir=output_dir / "prediction_pngs",
+                scene_lists_dir=Path(args.scene_lists_dir),
+                submission_output_dir=submission_output_dir,
+                submission_output_zip=submission_output_zip,
+                expected_submission_count=args.expected_submission_count,
             )
+            print(f"Submission PNG directory: {submission_output_dir}")
+            print(f"Submission ZIP path: {submission_output_zip}")
+            result_payload.update({
+                "submission_target_count": target_count,
+                "submission_created_count": created_count,
+                "submission_output_dir": str(submission_output_dir),
+                "submission_output_zip": str(submission_output_zip),
+            })
+
+        with open(output_dir / "results.json", "w", encoding="utf-8") as fp:
+            json.dump(result_payload, fp, indent=2)
     else:
         _, fine_ious, final_fine = compute_fine_ious(fine_conf_mat,
                                                      num_classes)

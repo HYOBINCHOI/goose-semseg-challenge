@@ -20,14 +20,9 @@ import torch
 import torch.nn.functional as F
 import tqdm
 from PIL import Image
-from goosetools import GOOSE_Dataset
-from goosetools.data import load_splits
 from models import ConvNeXtMask2FormerBoostedModel
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
-from evaluation import (compute_coarse_ious, compute_fine_ious,
-                        load_label_mapping, resolve_label_mapping_csv,
-                        update_coarse_confusion, update_fine_confusion)
 from make_submission_zip import (build_name_index, copy_submission_files,
                                  load_target_names, prepare_output_dir,
                                  validate_submission_zip, write_submission_zip)
@@ -48,30 +43,40 @@ def parse_args() -> argparse.Namespace:
                         help="Directory for outputs")
     parser.add_argument("--test_split_name",
                         type=str,
-                        default="val",
-                        help="Split to evaluate on")
-    parser.add_argument("--crop", action="store_true")
+                        default="test",
+                        help="Split to run inference on. Local validation is disabled, so use test.")
     parser.add_argument("--resize_width", type=int, default=512)
     parser.add_argument("--resize_height", type=int, default=512)
+    parser.set_defaults(disable_resize=True)
     parser.add_argument(
         "--disable_resize",
+        dest="disable_resize",
         action="store_true",
-        help="Use raw image size at inference time instead of resizing first.",
+        help="Use raw image size at inference time instead of resizing first. "
+        "This is the default behavior.",
+    )
+    parser.add_argument(
+        "--enable_resize",
+        dest="disable_resize",
+        action="store_false",
+        help="Resize before inference using --resize_width/--resize_height.",
     )
     parser.add_argument("--n_classes", type=int, default=64)
-    parser.add_argument(
-        "--use_processed_labels",
-        action="store_true",
-        help="Evaluate with processed labels (cropped/resized). "
-        "For competition-style evaluation, keep this False.",
-    )
-    parser.add_argument(
-        "--label_mapping_csv",
-        type=str,
-        default=None,
-        help="Path to goose_label_mapping.csv. "
-        "If not set, {path}/goose_label_mapping.csv will be used.",
-    )
+    # LOCAL VALIDATION DISABLED:
+    # The arguments below were only used by the old val/evaluation path.
+    # parser.add_argument(
+    #     "--use_processed_labels",
+    #     action="store_true",
+    #     help="Evaluate with processed labels (cropped/resized). "
+    #     "For competition-style evaluation, keep this False.",
+    # )
+    # parser.add_argument(
+    #     "--label_mapping_csv",
+    #     type=str,
+    #     default=None,
+    #     help="Path to goose_label_mapping.csv. "
+    #     "If not set, {path}/goose_label_mapping.csv will be used.",
+    # )
     parser.add_argument("--window_size",
                         type=int,
                         default=512,
@@ -460,31 +465,11 @@ def collect_test_image_paths(dataset_root: str) -> List[str]:
     return image_paths
 
 
-def preprocess_image_like_dataset(image: Image.Image, crop: bool,
+def preprocess_image_like_dataset(image: Image.Image,
                                   resize_size: Optional[Sequence[int]]) -> torch.Tensor:
-    # GOOSE_Dataset.preprocess와 동일한 규칙으로 test image를 전처리한다.
-    if crop:
-        if resize_size is None:
-            raise ValueError(
-                "--crop and --disable_resize cannot be used together in the "
-                "current pipeline because crop ratio is derived from resize size."
-            )
-        crop_ratio = resize_size[0] / resize_size[1]
-        input_ratio = image.width / image.height
-
-        if input_ratio > crop_ratio:
-            new_height = image.height
-            new_width = int(new_height * crop_ratio)
-        elif crop_ratio > input_ratio:
-            new_width = image.width
-            new_height = int(new_width // crop_ratio)
-        else:
-            new_width = image.width
-            new_height = image.height
-
-        image = transforms.CenterCrop((new_height, new_width)).forward(image)
-
-    if _size is not None:
+    # test image를 모델 입력 텐서로 바꾼다.
+    # 기본은 raw-size inference이고, --enable_resize를 줬을 때만 resize한다.
+    if resize_size is not None:
         image = image.resize(resize_size, resample=Image.BILINEAR)
 
     return transforms.ToTensor()(image)
@@ -525,18 +510,12 @@ def main() -> None:
     # 전체 실행 흐름:
     # 1) 인자 파싱
     # 2) checkpoint에서 모델 복원
-    # 3) 평가 데이터셋 로드
+    # 3) test 데이터 로드
     # 4) sliding window + multiscale inference 수행
-    # 5) prediction으로 mIoU 계산 및 결과 저장
+    # 5) prediction PNG 및 submission 산출물 저장
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-
-    if args.disable_resize and args.crop:
-        raise ValueError(
-            "--disable_resize and --crop cannot be combined in the current "
-            "implementation. Disable crop when running raw-size inference."
-        )
 
     # 1) checkpoint로부터 학습된 모델 복원
     ckpt = strip_file_prefix(args.ckpt)
@@ -549,28 +528,14 @@ def main() -> None:
             f"num_classes={checkpoint_num_classes}.")
     num_classes = checkpoint_num_classes
 
-    mapping_csv = resolve_label_mapping_csv(args.path, args.label_mapping_csv)
-    _, class_to_coarse = load_label_mapping(mapping_csv, num_classes)
-
     is_test_split = args.test_split_name == "test"
-
-    if is_test_split:
-        test_image_paths = collect_test_image_paths(args.path)
-        validation_dataset = None
-    else:
-        # 2) 평가할 split 로드
-        validation_dict = load_splits(args.path, [args.test_split_name])[0]
-        validation_dataset = GOOSE_Dataset(
-            validation_dict,
-            crop=args.crop,
-            resize_size=None if args.disable_resize else
-            [args.resize_width, args.resize_height],
-            with_instances=False,
+    if not is_test_split:
+        raise ValueError(
+            "LOCAL VALIDATION DISABLED: this script is now test/submission "
+            "only. Use --test_split_name test."
         )
 
-    # evaluation.py와 같은 competition-style confusion matrix를 사용한다.
-    fine_conf_mat = torch.zeros((num_classes, num_classes), dtype=torch.int64)
-    coarse_conf_mat = torch.zeros((11, 12), dtype=torch.int64)
+    test_image_paths = collect_test_image_paths(args.path)
     output_dir = ensure_output_dir(args.output)
 
     with open(output_dir / "config.json", "w", encoding="utf-8") as fp:
@@ -579,29 +544,31 @@ def main() -> None:
     print("*** Running sliding-window + multiscale inference ***")
     print("*****************************************************")
 
-    total_items = len(test_image_paths) if is_test_split else len(
-        validation_dataset)
+    total_items = len(test_image_paths)
     pbar = tqdm.tqdm(range(total_items))
+    logged_input_shape = False
     with torch.no_grad():
         for index in pbar:
-            if is_test_split:                   # test or val
-                image_path = test_image_paths[index]
-                original_image = Image.open(image_path).convert("RGB")
-                original_height = original_image.height
-                original_width = original_image.width
-                image = preprocess_image_like_dataset(
-                    original_image,
-                    crop=args.crop,
-                    resize_size=None if args.disable_resize else
-                    [args.resize_width, args.resize_height],
-                ).unsqueeze(0).to(device)
-                semantic_map = None
-            else:
-                image, semantic_map = validation_dataset[index]
-                image_path = validation_dataset.dataset_dict[index]["img_path"]
-                image = image.unsqueeze(0).to(device)
-                original_height = None
-                original_width = None
+            image_path = test_image_paths[index]
+            original_image = Image.open(image_path).convert("RGB")
+            original_height = original_image.height
+            original_width = original_image.width
+            image = preprocess_image_like_dataset(
+                original_image,
+                resize_size=None if args.disable_resize else
+                [args.resize_width, args.resize_height],
+            ).unsqueeze(0).to(device)
+
+            if not logged_input_shape:
+                print(
+                    "First input sizes:",
+                    {
+                        "original_width": original_width,
+                        "original_height": original_height,
+                        "model_input_shape": list(image.shape),
+                    },
+                )
+                logged_input_shape = True
 
             # 3) 현재 샘플에 대해 원하는 scale/window 설정으로 추론 수행
             logits = multiscale_inference(
@@ -619,108 +586,55 @@ def main() -> None:
             # 4) dense logits -> 최종 semantic class map
             prediction = logits.argmax(dim=1).squeeze(0).cpu().long()
 
-            if is_test_split:
-                resize = transforms.Resize(
-                    [original_height, original_width],
-                    interpolation=InterpolationMode.NEAREST,
-                )
-                prediction = resize(prediction.unsqueeze(0)).squeeze(0).long()
-            else:
-                # competition-style 평가는 원본 라벨 해상도 기준으로 계산한다.
-                if not args.use_processed_labels:
-                    semantic_map = validation_dataset.get_original_label(index, True)
-
-                # GT label 크기와 다르면 nearest 보간으로 prediction 크기 맞춤
-                if semantic_map.shape[-2:] != prediction.shape[-2:]:
-                    resize = transforms.Resize(
-                        [semantic_map.shape[0], semantic_map.shape[1]],
-                        interpolation=InterpolationMode.NEAREST,
-                    )
-                    prediction = resize(prediction.unsqueeze(0)).squeeze(0).long()
-
-                semantic_map = semantic_map.cpu().long()
-
-                # evaluation.py와 같은 fine/coarse confusion 업데이트
-                update_fine_confusion(fine_conf_mat, semantic_map, prediction,
-                                      num_classes)
-                update_coarse_confusion(coarse_conf_mat, semantic_map, prediction,
-                                        class_to_coarse, num_classes)
-
-                _, _, current_fine = compute_fine_ious(fine_conf_mat,
-                                                       num_classes)
-                _, current_coarse = compute_coarse_ious(coarse_conf_mat)
-                current_comp = 0.5 * current_fine + 0.5 * current_coarse
-                pbar.set_description(
-                    f"fine={current_fine.item():.4f}, "
-                    f"coarse={current_coarse.item():.4f}, "
-                    f"comp={current_comp.item():.4f}")
-            if is_test_split:
-                pbar.set_description("test inference")
+            resize = transforms.Resize(
+                [original_height, original_width],
+                interpolation=InterpolationMode.NEAREST,
+            )
+            prediction = resize(prediction.unsqueeze(0)).squeeze(0).long()
+            pbar.set_description("test inference")
 
             if args.save_predictions:
                 save_predictions_if_needed(output_dir, index, prediction)
             if args.save_prediction_pngs or is_test_split:
                 save_prediction_png(output_dir, image_path, prediction)
 
-    if is_test_split:
-        print("Finished test inference.")
-        print(f"Prediction PNG directory: {output_dir / 'prediction_pngs'}")
-        result_payload = {
-            "mode": "test_inference",
-            "num_images": total_items,
-            "prediction_png_dir": str(output_dir / "prediction_pngs"),
-            "num_classes": num_classes,
-        }
+    print("Finished test inference.")
+    print(f"Prediction PNG directory: {output_dir / 'prediction_pngs'}")
+    result_payload = {
+        "mode": "test_inference",
+        "num_images": total_items,
+        "prediction_png_dir": str(output_dir / "prediction_pngs"),
+        "num_classes": num_classes,
+    }
 
-        if args.make_submission_zip:
-            submission_output_dir = Path(
-                args.submission_output_dir) if args.submission_output_dir is not None else output_dir / "submission_pngs"
-            submission_output_zip = Path(
-                args.submission_output_zip) if args.submission_output_zip is not None else output_dir / "submission.zip"
+    if args.make_submission_zip:
+        submission_output_dir = Path(
+            args.submission_output_dir) if args.submission_output_dir is not None else output_dir / "submission_pngs"
+        submission_output_zip = Path(
+            args.submission_output_zip) if args.submission_output_zip is not None else output_dir / "submission.zip"
 
-            target_count, created_count = build_submission_from_predictions(
-                prediction_png_dir=output_dir / "prediction_pngs",
-                scene_lists_dir=Path(args.scene_lists_dir),
-                submission_output_dir=submission_output_dir,
-                submission_output_zip=submission_output_zip,
-                expected_submission_count=args.expected_submission_count,
-            )
-            print(f"Submission PNG directory: {submission_output_dir}")
-            print(f"Submission ZIP path: {submission_output_zip}")
-            result_payload.update({
-                "submission_target_count": target_count,
-                "submission_created_count": created_count,
-                "submission_output_dir": str(submission_output_dir),
-                "submission_output_zip": str(submission_output_zip),
-            })
+        target_count, created_count = build_submission_from_predictions(
+            prediction_png_dir=output_dir / "prediction_pngs",
+            scene_lists_dir=Path(args.scene_lists_dir),
+            submission_output_dir=submission_output_dir,
+            submission_output_zip=submission_output_zip,
+            expected_submission_count=args.expected_submission_count,
+        )
+        print(f"Submission PNG directory: {submission_output_dir}")
+        print(f"Submission ZIP path: {submission_output_zip}")
+        result_payload.update({
+            "submission_target_count": target_count,
+            "submission_created_count": created_count,
+            "submission_output_dir": str(submission_output_dir),
+            "submission_output_zip": str(submission_output_zip),
+        })
 
-        with open(output_dir / "results.json", "w", encoding="utf-8") as fp:
-            json.dump(result_payload, fp, indent=2)
-    else:
-        _, fine_ious, final_fine = compute_fine_ious(fine_conf_mat,
-                                                     num_classes)
-        coarse_ious, final_coarse = compute_coarse_ious(coarse_conf_mat)
-        final_composite = 0.5 * final_fine + 0.5 * final_coarse
-
-        print(f"Final mIoU fine: {final_fine.item():.6f}")
-        print(f"Final mIoU coarse: {final_coarse.item():.6f}")
-        print(f"Final mIoU composite: {final_composite.item():.6f}")
-
-        with open(output_dir / "results.json", "w", encoding="utf-8") as fp:
-            json.dump(
-                {
-                    "mIoU_fine": float(final_fine.item()),
-                    "mIoU_coarse": float(final_coarse.item()),
-                    "mIoU_composite": float(final_composite.item()),
-                    "num_classes": num_classes,
-                    "num_fine_classes_with_union": int(
-                        torch.sum(~torch.isnan(fine_ious)).item()),
-                    "num_coarse_categories_with_union": int(
-                        torch.sum(~torch.isnan(coarse_ious)).item()),
-                },
-                fp,
-                indent=2,
-            )
+    # LOCAL VALIDATION DISABLED:
+    # The old val/evaluation path that computed fine/coarse/composite mIoU
+    # was intentionally removed from execution flow. This script is now
+    # submission/test inference only.
+    with open(output_dir / "results.json", "w", encoding="utf-8") as fp:
+        json.dump(result_payload, fp, indent=2)
 
 
 if __name__ == "__main__":

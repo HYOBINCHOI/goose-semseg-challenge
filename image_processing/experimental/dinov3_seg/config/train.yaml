@@ -1,0 +1,69 @@
+data_path: /home/datasets/goose-dataset
+goose_tools_root: /home/mipstu/jiPark/challenge/goose-semseg-challenge/image_processing
+run_name: dinov3_seg_upstream
+
+epochs: 100
+batch_size: 2
+num_workers: 4
+prefetch_factor: 1
+persistent_workers: false
+disable_pin_memory: false
+
+lr: 4.0e-5
+encoder_lr: 1.0e-6
+weight_decay: 1.0e-2
+grad_clip_norm: 35.0
+grad_accum_steps: 1
+amp: true
+seed: 42
+device: cuda
+gradient_checkpointing: false
+
+resize_width: 768 #640
+resize_height: 768 #640
+crop: false
+num_classes: 64
+ignore_index: 255
+
+mask2former_pretrained_model_name_or_path: facebook/mask2former-swin-large-ade-semantic
+freeze_encoder: false
+freeze_mask2former_decoder: false
+classification_loss_type: seesaw
+seesaw_p: 0.8
+seesaw_q: 2.0
+seesaw_eps: 1.0e-2
+dist_eval: false
+
+dinov3_loader: hf_auto
+dinov3_repo_or_dir: /home/mipstu/jiPark/challenge/dinov3
+dinov3_source: local
+dinov3_model_name: dinov3_vitl16
+dinov3_weights: null
+dinov3_model_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
+dinov3_image_processor_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
+vit_feature_indices: [4, 11, 17, 23]
+vit_patch_size: 16
+vit_norm_features: true
+disable_encoder_norm: false
+
+m2f_hidden_dim: 256
+m2f_no_object_weight: 0.1
+m2f_class_weight: 2.0
+m2f_mask_weight: 5.0
+m2f_dice_weight: 5.0
+m2f_train_num_points: 12544
+m2f_oversample_ratio: 3.0
+m2f_importance_sample_ratio: 0.75
+
+adapter_pretrain_size: 512
+adapter_conv_inplane: 64
+adapter_deform_num_heads: 16
+adapter_drop_path_rate: 0.3
+adapter_init_values: 0.0
+adapter_with_cffn: true
+adapter_cffn_ratio: 0.25
+adapter_deform_ratio: 0.5
+adapter_add_vit_feature: true
+adapter_use_extra_extractor: true
+
+model_type: experimental_dinov3_seg_upstream

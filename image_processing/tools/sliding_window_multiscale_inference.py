@@ -16,11 +16,17 @@ TRAIN_SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 if str(TRAIN_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(TRAIN_SCRIPTS_DIR))
 
+EXPERIMENTAL_DINOV3_DIR = PROJECT_ROOT / "experimental" / "dinov3_seg"
+if str(EXPERIMENTAL_DINOV3_DIR) not in sys.path:
+    sys.path.insert(0, str(EXPERIMENTAL_DINOV3_DIR))
+
 import torch
 import torch.nn.functional as F
 import tqdm
 from PIL import Image
 from models import ConvNeXtMask2FormerBoostedModel
+from goose.checkpoint import build_model_from_checkpoint as \
+    build_experimental_model_from_checkpoint
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 from make_submission_zip import (build_name_index, copy_submission_files,
@@ -161,7 +167,7 @@ def load_checkpoint_payload(ckpt_path: str) -> dict:
     # - model_state_dict
     # - args
     # 같은 정보를 함께 들고 있으므로, 그 형식인지 확인한다.
-    checkpoint = torch.load(ckpt_path, map_location="cpu")
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
         raise ValueError(
             "Expected a training checkpoint containing model_state_dict.")
@@ -179,6 +185,22 @@ def build_model_from_checkpoint(ckpt_path: str,
     # - payload: checkpoint 원본 dict (args 등 메타데이터 포함)
     payload = load_checkpoint_payload(ckpt_path)
     checkpoint_args = dict(payload.get("args", {}))
+    state_dict_keys = payload.get("model_state_dict", {}).keys()
+
+    # Experimental DINOv3 checkpoints use segmentation_backbone /
+    # segmentation_head keys, while the original ConvNeXt Mask2Former
+    # checkpoints use mask2former.* keys.
+    is_experimental_dinov3 = any(
+        key.startswith("segmentation_backbone.")
+        or key.startswith("segmentation_head.")
+        for key in state_dict_keys
+    ) or bool(checkpoint_args.get("vit_feature_indices"))
+
+    if is_experimental_dinov3:
+        bundle = build_experimental_model_from_checkpoint(ckpt_path, device)
+        print("[INFO] Loaded checkpoint backend: experimental_dinov3_seg")
+        return bundle.model, bundle.payload
+
     checkpoint_args["device"] = str(device)
     args_namespace = argparse.Namespace(**checkpoint_args)
 
@@ -190,6 +212,7 @@ def build_model_from_checkpoint(ckpt_path: str,
     model.load_state_dict(payload["model_state_dict"], strict=True)
     model = model.to(device)
     model.eval()
+    print("[INFO] Loaded checkpoint backend: convnext_mask2former_boosted")
     return model, payload
 
 
@@ -221,6 +244,55 @@ def compute_semantic_logits(outputs,
     return semantic_logits
 
 
+def is_experimental_dinov3_model(model: torch.nn.Module) -> bool:
+    return hasattr(model, "segmentation_backbone") and hasattr(
+        model, "segmentation_head"
+    ) and hasattr(model, "predict")
+
+
+_PATCH_ALIGNMENT_LOGGED = False
+
+
+def align_crop_for_model(model: torch.nn.Module,
+                         crop: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
+    # Experimental DINOv3 backbones assume patch-aligned spatial sizes.
+    # In practice this adapter also uses CNN stages at /8, /16, /32, so
+    # aligning to 32 keeps the token/grid bookkeeping consistent.
+    patch_size = getattr(model, "patch_size", None)
+    if patch_size is None:
+        return crop, tuple(int(x) for x in crop.shape[-2:])
+
+    patch_size = int(patch_size)
+    alignment = max(patch_size, 32)
+    original_height, original_width = (int(crop.shape[-2]), int(crop.shape[-1]))
+    aligned_height = ((original_height + alignment - 1) // alignment) * alignment
+    aligned_width = ((original_width + alignment - 1) // alignment) * alignment
+
+    if (aligned_height, aligned_width) == (original_height, original_width):
+        return crop, (original_height, original_width)
+
+    global _PATCH_ALIGNMENT_LOGGED
+    if not _PATCH_ALIGNMENT_LOGGED:
+        print(
+            "[INFO] Aligning crop sizes for patch-based backbone:",
+            {
+                "patch_size": patch_size,
+                "alignment": alignment,
+                "from": [original_height, original_width],
+                "to": [aligned_height, aligned_width],
+            },
+        )
+        _PATCH_ALIGNMENT_LOGGED = True
+
+    aligned_crop = F.interpolate(
+        crop,
+        size=(aligned_height, aligned_width),
+        mode="bilinear",
+        align_corners=False,
+    )
+    return aligned_crop, (original_height, original_width)
+
+
 def predict_crop_logits(model: torch.nn.Module,
                         crop: torch.Tensor) -> torch.Tensor:
     # 가장 기본이 되는 1회 추론 함수.
@@ -237,9 +309,25 @@ def predict_crop_logits(model: torch.nn.Module,
     #
     # sliding window는 결국 여러 crop에 대해 이 함수를 반복 호출하고,
     # 나온 logits를 원본 좌표계에 다시 합치는 방식으로 구현된다.
+    aligned_crop, target_size = align_crop_for_model(model, crop)
     with torch.no_grad():
-        outputs = model(pixel_values=crop)
-    return compute_semantic_logits(outputs, crop.shape[-2:])
+        if is_experimental_dinov3_model(model):
+            # Match the baseline experimental DINOv3 inference path:
+            # model.predict(...) upsamples pred_masks to rescale_to first, then
+            # semantic logits are formed from pred_logits/pred_masks.
+            predictions = model.predict(aligned_crop, rescale_to=target_size)
+            mask_pred = predictions["pred_masks"]
+            mask_cls = predictions["pred_logits"]
+            mask_cls = F.softmax(mask_cls, dim=-1)[..., :-1]
+            mask_pred = mask_pred.sigmoid()
+            return torch.einsum(
+                "bqc,bqhw->bchw",
+                mask_cls.to(torch.float32),
+                mask_pred.to(torch.float32),
+            )
+
+        outputs = model(pixel_values=aligned_crop)
+    return compute_semantic_logits(outputs, target_size)
 
 
 def generate_window_starts(length: int, window_size: int,

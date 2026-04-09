@@ -25,7 +25,7 @@ def strip_file_prefix(path: Union[Path, str]) -> Path:
 
 def load_checkpoint_payload(checkpoint_path: Union[Path, str]) -> dict:
     checkpoint_path = strip_file_prefix(checkpoint_path)
-    payload = torch.load(checkpoint_path, map_location="cpu")
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if not isinstance(payload, dict) or "model_state_dict" not in payload:
         raise ValueError(
             "Expected an experimental DINOv3 segmentation checkpoint with a model_state_dict field."

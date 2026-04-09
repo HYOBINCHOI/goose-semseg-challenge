@@ -332,13 +332,29 @@ def main() -> None:
     image_paths = collect_image_paths(dataset_root, args.split)
     image_paths = select_image_paths_for_targets(image_paths, target_names)
 
-    predictions_dir = export_predictions_for_paths(
-        image_paths=image_paths,
-        checkpoint_path=strip_file_prefix(args.checkpoint),
-        output_dir=args.generated_predictions_dir,
-        device_name=args.device,
-        output_name_resolver=build_prediction_output_name,
-    )
+    # Reuse already generated PNGs when they exist. This avoids re-running
+    # model inference and allows submission packaging for backends that are
+    # not yet wired into goosetools/checkpoint_inference.py.
+    existing_prediction_files = []
+    if args.generated_predictions_dir.exists():
+        existing_prediction_files = list(
+            args.generated_predictions_dir.rglob("*.png")
+        )
+
+    if existing_prediction_files:
+        predictions_dir = args.generated_predictions_dir
+        print(
+            "Using existing generated predictions:",
+            predictions_dir,
+        )
+    else:
+        predictions_dir = export_predictions_for_paths(
+            image_paths=image_paths,
+            checkpoint_path=strip_file_prefix(args.checkpoint),
+            output_dir=args.generated_predictions_dir,
+            device_name=args.device,
+            output_name_resolver=build_prediction_output_name,
+        )
 
     prediction_files = collect_prediction_files(
         predictions_dir=predictions_dir,
